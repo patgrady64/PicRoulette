@@ -8,29 +8,20 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.documentfile.provider.DocumentFile
 import coil.compose.AsyncImage
 import android.provider.DocumentsContract
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,7 +42,6 @@ class MainActivity : ComponentActivity() {
 fun PicRouletteApp() {
     val context = LocalContext.current
 
-    // Using Explicit .value access to avoid compiler inference errors
     val imageList = remember { mutableStateOf<List<Uri>>(emptyList()) }
     val currentIndex = remember { mutableStateOf<Int>(0) }
     val isPlaying = remember { mutableStateOf<Boolean>(false) }
@@ -69,7 +59,7 @@ fun PicRouletteApp() {
                 )
 
                 Thread {
-                    val foundImages = queryAllImagesInTree(context, folderUri).shuffled()
+                    val foundImages = queryAllImagesInTree(context, folderUri)
                     (context as ComponentActivity).runOnUiThread {
                         imageList.value = foundImages
                         isScanning.value = false
@@ -93,15 +83,20 @@ fun PicRouletteApp() {
 
             if (isScanning.value) {
                 CircularProgressIndicator()
-                Text("Finding images...", modifier = Modifier.padding(top = 8.dp))
             } else {
                 Button(onClick = { launcher.launch(null) }) {
                     Text(if (imageList.value.isEmpty()) "Pick Folder" else "Change Folder")
                 }
 
                 if (imageList.value.isNotEmpty()) {
-                    Text("${imageList.value.size} images found", modifier = Modifier.padding(8.dp))
-                    Button(onClick = { isPlaying.value = true }) {
+                    Text("${imageList.value.size} images loaded", modifier = Modifier.padding(8.dp))
+
+                    Button(onClick = {
+                        // SHUFFLE HERE: Every time you start, the order changes
+                        imageList.value = imageList.value.shuffled()
+                        currentIndex.value = 0
+                        isPlaying.value = true
+                    }) {
                         Text("START ROULETTE")
                     }
                 }
@@ -121,7 +116,6 @@ fun PicRouletteApp() {
                     onLongClick = { uiVisible.value = !uiVisible.value }
                 )
         ) {
-            // THE IMAGE
             if (imageList.value.isNotEmpty()) {
                 AsyncImage(
                     model = imageList.value[currentIndex.value],
@@ -131,9 +125,8 @@ fun PicRouletteApp() {
                 )
             }
 
-            // OVERLAY UI
             if (uiVisible.value) {
-                // Top Row: Stop (Left) and Back (Right)
+                // Top controls
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -144,14 +137,8 @@ fun PicRouletteApp() {
                     }) { Text("Back") }
                 }
 
-                // Bottom Row: Counter (Left) and Delete (Right)
+                // Bottom controls (Counter Removed)
                 Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-                    Text(
-                        text = "${currentIndex.value + 1} / ${imageList.value.size}",
-                        modifier = Modifier.align(Alignment.BottomStart),
-                        style = MaterialTheme.typography.labelLarge
-                    )
-
                     Button(
                         onClick = {
                             val uriToDelete = imageList.value[currentIndex.value]
@@ -164,7 +151,7 @@ fun PicRouletteApp() {
                                     currentIndex.value = 0
                                 }
                             } catch (e: Exception) {
-                                // Handle delete failure (read-only files)
+                                // Error handling
                             }
                         },
                         modifier = Modifier.align(Alignment.BottomEnd),
