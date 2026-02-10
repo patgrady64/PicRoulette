@@ -106,9 +106,8 @@ fun getFavoritesList(context: Context): List<FavoriteFile> {
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
             while (cursor.moveToNext()) {
-                val name = cursor.getString(nameCol)
                 val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cursor.getLong(idCol))
-                list.add(FavoriteFile(name, uri))
+                list.add(FavoriteFile(cursor.getString(nameCol), uri))
             }
         }
     } catch (e: Exception) {}
@@ -152,8 +151,6 @@ fun PicRouletteApp() {
 
     val folderList = remember { mutableStateOf(getSavedFolders(context)) }
     val pickedFolderImages = remember { mutableStateOf<List<Uri>>(emptyList()) }
-
-    // SnapshotStateList is critical for instant UI updates when items are removed
     val activeSessionList = remember { mutableStateListOf<Uri>() }
     var favoriteFiles by remember { mutableStateOf<List<FavoriteFile>>(emptyList()) }
 
@@ -170,7 +167,6 @@ fun PicRouletteApp() {
     fun refreshFavs() { scope.launch(Dispatchers.IO) { favoriteFiles = getFavoritesList(context) } }
     LaunchedEffect(Unit) { refreshFavs() }
 
-    // FORCE NORMALIZATION whenever the URI index changes
     LaunchedEffect(currentIndex.intValue) {
         scale.floatValue = 1f
         offset.value = Offset.Zero
@@ -202,7 +198,6 @@ fun PicRouletteApp() {
             }
         ) { padding ->
             Column(modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)) {
-                // Library Card
                 Box(modifier = Modifier.fillMaxWidth().height(180.dp).clip(RoundedCornerShape(24.dp))
                     .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.primary)))
                     .clickable {
@@ -236,7 +231,6 @@ fun PicRouletteApp() {
             }
         }
     } else {
-        // --- VIEWER MODE ---
         Box(modifier = Modifier.fillMaxSize().background(Color.Black).transformable(state = transformState)
             .combinedClickable(
                 onClick = {
@@ -247,10 +241,14 @@ fun PicRouletteApp() {
                 onLongClick = { uiVisible.value = !uiVisible.value }
             )
         ) {
-            if (activeSessionList.isNotEmpty()) {
-                val currentUri = activeSessionList[currentIndex.intValue]
+            // Safety check: if list is empty, exit viewer
+            if (activeSessionList.isEmpty()) {
+                isPlaying.value = false
+            } else {
+                // Ensure index is within bounds (prevents crashes)
+                val safeIndex = currentIndex.intValue.coerceIn(0, activeSessionList.size - 1)
+                val currentUri = activeSessionList[safeIndex]
 
-                // Detection for Favorites Mode
                 val isViewingFavoritesMode = remember(activeSessionList.size) {
                     activeSessionList.any { it.toString().contains("PicRoulette_Favorites") }
                 }
@@ -277,10 +275,8 @@ fun PicRouletteApp() {
                         modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y),
                         contentScale = ContentScale.Fit,
                         onError = {
-                            // Automatically skip "Ghost" files that MediaStore claims exist
                             if (activeSessionList.isNotEmpty()) {
-                                activeSessionList.removeAt(currentIndex.intValue)
-                                if (activeSessionList.isEmpty()) isPlaying.value = false
+                                activeSessionList.removeAt(safeIndex)
                             }
                         }
                     )
@@ -295,47 +291,39 @@ fun PicRouletteApp() {
                                 triggerVibration(context)
                                 scope.launch {
                                     if (isStarred && matchedFav != null) {
-                                        // 1. Storage Delete
+                                        // DELETE
                                         withContext(Dispatchers.IO) { context.contentResolver.delete(matchedFav.mediaUri, null, null) }
-
-                                        // 2. Immediate Memory Purge
                                         favoriteFiles = favoriteFiles.filter { it.mediaUri != matchedFav.mediaUri }
                                         activeSessionList.remove(currentUri)
 
-                                        // 3. Rescan & Reshuffle if in Favorites Mode
                                         if (isViewingFavoritesMode) {
                                             if (activeSessionList.isEmpty()) {
                                                 isPlaying.value = false
                                             } else {
-                                                val shuffledRemaining = activeSessionList.shuffled()
+                                                // Hard reshuffle to kill ghosts and keep index safe
+                                                val shuffled = activeSessionList.shuffled()
                                                 activeSessionList.clear()
-                                                activeSessionList.addAll(shuffledRemaining)
+                                                activeSessionList.addAll(shuffled)
                                                 currentIndex.intValue = 0
                                             }
                                         }
                                     } else {
-                                        // Save Logic
+                                        // SAVE
                                         val newUri = saveToFavoritesFolder(context, currentUri, currentFileName)
-                                        if (newUri != null) {
-                                            // Manual state injection for instant yellow star
-                                            favoriteFiles = favoriteFiles + FavoriteFile("PR_$currentFileName", newUri)
-                                        }
-                                        delay(500)
-                                        refreshFavs()
+                                        if (newUri != null) favoriteFiles = favoriteFiles + FavoriteFile("PR_$currentFileName", newUri)
+                                        delay(500); refreshFavs()
                                     }
                                 }
                             },
                             modifier = Modifier.background(Color.DarkGray.copy(0.5f), RoundedCornerShape(12.dp))
                         ) {
-                            Icon(
-                                imageVector = if (isStarred) Icons.Rounded.Star else Icons.Outlined.StarBorder,
-                                contentDescription = "Star",
-                                tint = if (isStarred) Color(0xFFFFD700) else Color.White
-                            )
+                            Icon(imageVector = if (isStarred) Icons.Rounded.Star else Icons.Outlined.StarBorder, contentDescription = "Star", tint = if (isStarred) Color(0xFFFFD700) else Color.White)
                         }
 
                         Button(onClick = {
-                            currentIndex.intValue = if (currentIndex.intValue > 0) currentIndex.intValue - 1 else activeSessionList.size - 1
+                            if (activeSessionList.isNotEmpty()) {
+                                currentIndex.intValue = if (currentIndex.intValue > 0) currentIndex.intValue - 1 else activeSessionList.size - 1
+                            }
                         }, colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray.copy(0.7f))) { Text("Back") }
                     }
                 }
@@ -343,7 +331,6 @@ fun PicRouletteApp() {
         }
     }
 
-    // Bottom Sheet for Folders
     if (showSheet) {
         ModalBottomSheet(onDismissRequest = { showSheet = false }) {
             val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -353,7 +340,7 @@ fun PicRouletteApp() {
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     Text("Linked Folders", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     IconButton(onClick = { launcher.launch(null) }, modifier = Modifier.background(MaterialTheme.colorScheme.primary, CircleShape)) {
-                        Icon(imageVector = Icons.Rounded.Add, contentDescription = "Add", tint = Color.Black)
+                        Icon(imageVector = Icons.Rounded.Add, contentDescription = null, tint = Color.Black)
                     }
                 }
                 Spacer(Modifier.height(16.dp))
@@ -364,7 +351,7 @@ fun PicRouletteApp() {
                             Spacer(Modifier.width(12.dp))
                             Text(uri.path?.split("/")?.lastOrNull() ?: "Folder", modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             IconButton(onClick = { folderList.value -= uri; saveFolders(context, folderList.value); scope.launch { scanAllFolders() } }) {
-                                Icon(imageVector = Icons.Rounded.Delete, contentDescription = "Delete", tint = Color.Red)
+                                Icon(imageVector = Icons.Rounded.Delete, contentDescription = null, tint = Color.Red)
                             }
                         }
                     }
