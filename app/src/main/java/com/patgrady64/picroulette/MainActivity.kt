@@ -13,7 +13,6 @@ import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -29,7 +28,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -84,28 +82,6 @@ fun triggerVibration(context: Context, long: Boolean = false) {
         @Suppress("DEPRECATION")
         if (long) vibrator.vibrate(50) else vibrator.vibrate(10)
     }
-}
-
-// Translate SAF Document URI to MediaStore URI to prevent deletion crashes
-fun getMediaStoreUriFromDocumentUri(context: Context, documentUri: Uri): Uri? {
-    val projection = arrayOf(MediaStore.Images.Media._ID)
-    val fileName = documentUri.lastPathSegment?.split(":")?.lastOrNull()?.split("/")?.lastOrNull() ?: return null
-    val selection = "${MediaStore.Images.Media.DISPLAY_NAME} = ?"
-
-    return try {
-        context.contentResolver.query(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            projection,
-            selection,
-            arrayOf(fileName),
-            null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID))
-                ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
-            } else null
-        }
-    } catch (e: Exception) { null }
 }
 
 // --- FILE LOGIC ---
@@ -175,16 +151,25 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
-        super.onCreate(savedInstanceState)
-
-        hideSystemBars()
         splashScreen.setKeepOnScreenCondition { !isAppReady }
-        WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        lifecycleScope.launch {
-            delay(1500)
-            isAppReady = true
+        splashScreen.setOnExitAnimationListener { splashProvider ->
+            val slideUp = android.view.animation.TranslateAnimation(0f, 0f, 0f, -splashProvider.view.height.toFloat()).apply {
+                duration = 400
+                interpolator = android.view.animation.AnticipateInterpolator()
+                fillAfter = true
+            }
+            splashProvider.iconView.startAnimation(slideUp)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ splashProvider.remove() }, 400)
         }
+
+        super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+
+        lifecycleScope.launch { delay(1500); isAppReady = true }
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
@@ -194,17 +179,6 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
-    }
-
-    private fun hideSystemBars() {
-        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
-        windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -212,13 +186,16 @@ class MainActivity : ComponentActivity() {
 fun PicRouletteApp() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     val folderList = remember { mutableStateOf(getSavedFolders(context)) }
     val pickedFolderImages = remember { mutableStateOf<List<Uri>>(emptyList()) }
     val activeSessionList = remember { mutableStateListOf<Uri>() }
     var favoriteFiles by remember { mutableStateOf<List<FavoriteFile>>(emptyList()) }
 
-    val isPlaying = remember { mutableStateOf(false) }
+    var isPlaying by remember { mutableStateOf(false) }
+    var isFavoritesMode by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
     val isScanning = remember { mutableStateOf(false) }
     var showSheet by remember { mutableStateOf(false) }
     var uiVisibleAnim by remember { mutableStateOf(false) }
@@ -265,11 +242,13 @@ fun PicRouletteApp() {
     }
     LaunchedEffect(Unit) { scanAllFolders() }
 
-    if (!isPlaying.value) {
-        Scaffold(
-            containerColor = Color(0xFF0A0A0A),
-            topBar = {
-                Column(modifier = Modifier.padding(top = 24.dp)) {
+    Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+        containerColor = Color(0xFF0A0A0A)
+    ) { padding ->
+        if (!isPlaying) {
+            Box(Modifier.padding(padding)) {
+                Column(modifier = Modifier.padding(top = 32.dp)) {
                     CenterAlignedTopAppBar(
                         colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Transparent, titleContentColor = Color.White),
                         title = {
@@ -285,172 +264,180 @@ fun PicRouletteApp() {
                             ) { Icon(Icons.Rounded.Refresh, null, tint = if (isScanning.value) MaterialTheme.colorScheme.primary else Color.White) }
                         }
                     )
-                }
-            }
-        ) { padding ->
-            AnimatedVisibility(
-                visible = uiVisibleAnim,
-                enter = fadeIn(tween(800)) + slideInVertically(tween(800)) { it / 15 }
-            ) {
-                Column(modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 24.dp)) {
-                    Spacer(Modifier.height(24.dp))
-                    Box(modifier = Modifier.fillMaxWidth().height(240.dp).clip(RoundedCornerShape(32.dp))
-                        .background(Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00BFA5))))
-                        .clickable {
-                            if (pickedFolderImages.value.isNotEmpty()) {
-                                triggerVibration(context, true)
-                                activeSessionList.clear()
-                                activeSessionList.addAll(pickedFolderImages.value.shuffled())
-                                currentIndex.intValue = 0
-                                isPlaying.value = true
-                            }
-                        }
-                    ) {
-                        val shimmerAlpha by infiniteTransition.animateFloat(
-                            initialValue = 0.1f, targetValue = 0.25f,
-                            animationSpec = infiniteRepeatable(tween(1500), RepeatMode.Reverse), label = ""
-                        )
-                        Box(Modifier.fillMaxSize().background(Color.White.copy(shimmerAlpha)))
-                        Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(260.dp).align(Alignment.CenterEnd).offset(x = 80.dp).graphicsLayer(alpha = 0.15f), tint = Color.White)
-                        Column(modifier = Modifier.padding(32.dp).align(Alignment.BottomStart)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (isScanning.value) CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White.copy(0.7f), strokeWidth = 2.dp)
-                                else Icon(Icons.Rounded.PhotoLibrary, null, modifier = Modifier.size(16.dp), tint = Color.White.copy(0.7f))
-                                Spacer(Modifier.width(8.dp))
-                                Text("${pickedFolderImages.value.size} PHOTOS", color = Color.White.copy(0.7f), fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
-                            }
-                            Text(if (isScanning.value) "Syncing..." else "Start Roulette", color = Color.White, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black)
-                        }
-                    }
-                    Spacer(Modifier.height(48.dp))
-                    Text("COLLECTIONS", color = Color.Gray.copy(0.5f), fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 2.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-                    Spacer(Modifier.height(24.dp))
-                    DashboardActionCard("Library Folders", "${folderList.value.size} folders linked", Icons.Rounded.FolderCopy, Color(0xFFBB86FC)) { triggerVibration(context); showSheet = true }
-                    Spacer(Modifier.height(16.dp))
-                    DashboardActionCard("Your Favorites", "${favoriteFiles.size} images saved", Icons.Rounded.AutoAwesome, Color(0xFFFFD700)) {
-                        if (favoriteFiles.isNotEmpty()) {
-                            triggerVibration(context); activeSessionList.clear()
-                            activeSessionList.addAll(favoriteFiles.map { it.mediaUri }.shuffled())
-                            currentIndex.intValue = 0; isPlaying.value = true
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        // --- VIEWER MODE ---
-        val safeIndex = currentIndex.intValue.coerceIn(0, activeSessionList.size - 1)
-        val currentUri = activeSessionList[safeIndex]
-        var showDeleteDialog by remember { mutableStateOf(false) }
-
-        val currentFileName = remember(currentUri) {
-            var name = ""
-            try {
-                context.contentResolver.query(currentUri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)?.use {
-                    if (it.moveToFirst()) name = it.getString(0)
-                }
-            } catch (e: Exception) {}
-            name.ifEmpty { currentUri.lastPathSegment ?: "unknown" }
-        }
-        val matchedFav = favoriteFiles.find { it.fileNameOnDisk == currentFileName || it.fileNameOnDisk == "PR_$currentFileName" || currentFileName == "PR_${it.fileNameOnDisk}" }
-        val isStarred = matchedFav != null
-
-        val deleteLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-            // Use -1 for RESULT_OK to avoid unresolved reference errors
-            if (result.resultCode == -1) {
-                activeSessionList.removeAt(safeIndex)
-                if (activeSessionList.isEmpty()) isPlaying.value = false
-            }
-        }
-
-        if (showDeleteDialog) {
-            AlertDialog(
-                onDismissRequest = { showDeleteDialog = false },
-                containerColor = Color(0xFF1A1A1A),
-                title = { Text("Delete Permanently?", color = Color.White) },
-                text = { Text("This will delete the original file from your device entirely. This cannot be undone.", color = Color.Gray) },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showDeleteDialog = false
-                        scope.launch(Dispatchers.IO) {
-                            val mediaStoreUri = getMediaStoreUriFromDocumentUri(context, currentUri)
-                            withContext(Dispatchers.Main) {
-                                if (mediaStoreUri != null) {
-                                    val pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, listOf(mediaStoreUri))
-                                    deleteLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
-                                } else {
-                                    // Fallback if not indexed by MediaStore
-                                    try {
-                                        DocumentsContract.deleteDocument(context.contentResolver, currentUri)
-                                        activeSessionList.removeAt(safeIndex)
-                                        if (activeSessionList.isEmpty()) isPlaying.value = false
-                                    } catch (e: Exception) {
-                                        activeSessionList.removeAt(safeIndex)
+                    AnimatedVisibility(visible = uiVisibleAnim, enter = fadeIn(tween(800)) + slideInVertically(tween(800)) { it / 15 }) {
+                        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+                            Spacer(Modifier.height(24.dp))
+                            Box(modifier = Modifier.fillMaxWidth().height(240.dp).clip(RoundedCornerShape(32.dp)).background(Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00BFA5))))
+                                .clickable {
+                                    if (pickedFolderImages.value.isNotEmpty()) {
+                                        triggerVibration(context, true)
+                                        isFavoritesMode = false
+                                        activeSessionList.clear()
+                                        activeSessionList.addAll(pickedFolderImages.value.shuffled())
+                                        currentIndex.intValue = 0
+                                        isPlaying = true
                                     }
+                                }
+                            ) {
+                                val shimmerAlpha by infiniteTransition.animateFloat(initialValue = 0.1f, targetValue = 0.25f, animationSpec = infiniteRepeatable(tween(1500), RepeatMode.Reverse), label = "")
+                                Box(Modifier.fillMaxSize().background(Color.White.copy(shimmerAlpha)))
+                                Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(260.dp).align(Alignment.CenterEnd).offset(x = 80.dp).graphicsLayer(alpha = 0.15f), tint = Color.White)
+                                Column(modifier = Modifier.padding(32.dp).align(Alignment.BottomStart)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        if (isScanning.value) CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White.copy(0.7f), strokeWidth = 2.dp)
+                                        else Icon(Icons.Rounded.PhotoLibrary, null, modifier = Modifier.size(16.dp), tint = Color.White.copy(0.7f))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("${pickedFolderImages.value.size} PHOTOS", color = Color.White.copy(0.7f), fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
+                                    }
+                                    Text(if (isScanning.value) "Syncing..." else "Start Roulette", color = Color.White, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black)
+                                }
+                            }
+                            Spacer(Modifier.height(48.dp))
+                            Text("COLLECTIONS", color = Color.Gray.copy(0.5f), fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 2.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+                            Spacer(Modifier.height(24.dp))
+                            DashboardActionCard("Library Folders", "${folderList.value.size} folders linked", Icons.Rounded.FolderCopy, Color(0xFFBB86FC)) { triggerVibration(context); showSheet = true }
+                            Spacer(Modifier.height(16.dp))
+                            DashboardActionCard("Your Favorites", "${favoriteFiles.size} images saved", Icons.Rounded.Favorite, Color(0xFFFF4081)) {
+                                if (favoriteFiles.isNotEmpty()) {
+                                    triggerVibration(context)
+                                    isFavoritesMode = true
+                                    activeSessionList.clear()
+                                    activeSessionList.addAll(favoriteFiles.map { it.mediaUri }.shuffled())
+                                    currentIndex.intValue = 0
+                                    isPlaying = true
                                 }
                             }
                         }
-                    }) { Text("Delete", color = Color.Red, fontWeight = FontWeight.Bold) }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel", color = Color.White) }
+                    }
                 }
-            )
-        }
-
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-            Box(modifier = Modifier.fillMaxSize()
-                .transformable(state = transformState)
+            }
+        } else {
+            // --- VIEWER MODE ---
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black).transformable(state = transformState)
                 .combinedClickable(
-                    onClick = { if (activeSessionList.isNotEmpty()) currentIndex.intValue = (currentIndex.intValue + 1) % activeSessionList.size },
+                    onClick = {
+                        if (activeSessionList.isNotEmpty()) {
+                            if (currentIndex.intValue >= activeSessionList.size - 1) {
+                                val lastUri = activeSessionList[currentIndex.intValue]
+                                val reshuffled = activeSessionList.shuffled()
+                                activeSessionList.clear()
+                                activeSessionList.addAll(reshuffled)
+                                if (activeSessionList.size > 1 && activeSessionList[0] == lastUri) {
+                                    val first = activeSessionList.removeAt(0)
+                                    activeSessionList.add(first)
+                                }
+                                currentIndex.intValue = 0
+                            } else {
+                                currentIndex.intValue += 1
+                            }
+                        }
+                    },
                     onLongClick = { uiVisible.value = !uiVisible.value }
                 )
             ) {
-                key(currentUri) {
-                    AsyncImage(
-                        model = currentUri,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y),
-                        contentScale = ContentScale.Fit,
-                        onError = { if (activeSessionList.isNotEmpty()) activeSessionList.removeAt(safeIndex) }
-                    )
-                }
-            }
-
-            AnimatedVisibility(visible = uiVisible.value, enter = fadeIn(), exit = fadeOut()) {
-                Row(Modifier.fillMaxWidth().statusBarsPadding().padding(20.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                    Button(onClick = { isPlaying.value = false }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(0.12f)), shape = RoundedCornerShape(16.dp)) { Text("Exit") }
-                    IconButton(
-                        onClick = {
-                            triggerVibration(context)
-                            scope.launch {
-                                if (isStarred && matchedFav != null) {
-                                    withContext(Dispatchers.IO) { context.contentResolver.delete(matchedFav.mediaUri, null, null) }
-                                    favoriteFiles = favoriteFiles.filter { it.mediaUri != matchedFav.mediaUri }
-                                } else {
-                                    val newUri = saveToFavoritesFolder(context, currentUri, currentFileName)
-                                    if (newUri != null) favoriteFiles = favoriteFiles + FavoriteFile("PR_$currentFileName", newUri)
-                                    delay(500); refreshFavs()
-                                }
+                val safeIndex = currentIndex.intValue.coerceIn(0, activeSessionList.size.coerceAtLeast(1) - 1)
+                if (activeSessionList.isEmpty()) { isPlaying = false } else {
+                    val currentUri = activeSessionList[safeIndex]
+                    val currentFileName = remember(currentUri) {
+                        var name = ""
+                        try {
+                            context.contentResolver.query(currentUri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)?.use {
+                                if (it.moveToFirst()) name = it.getString(0)
                             }
-                        },
-                        modifier = Modifier.size(56.dp).background(Color.White.copy(0.12f), RoundedCornerShape(20.dp))
-                    ) {
-                        Icon(imageVector = if (isStarred) Icons.Rounded.Star else Icons.Outlined.StarBorder, contentDescription = "Star", tint = if (isStarred) Color(0xFFFFD700) else Color.White, modifier = Modifier.size(28.dp))
+                        } catch (e: Exception) {}
+                        name.ifEmpty { currentUri.lastPathSegment ?: "unknown" }
                     }
-                    Button(onClick = { if (activeSessionList.isNotEmpty()) currentIndex.intValue = if (currentIndex.intValue > 0) currentIndex.intValue - 1 else activeSessionList.size - 1 }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(0.12f)), shape = RoundedCornerShape(16.dp)) { Text("Back") }
-                }
-            }
+                    val matchedFav = favoriteFiles.find { it.fileNameOnDisk == currentFileName || it.fileNameOnDisk == "PR_$currentFileName" || currentFileName == "PR_${it.fileNameOnDisk}" }
+                    val isStarred = matchedFav != null
 
-            AnimatedVisibility(visible = uiVisible.value, enter = fadeIn() + slideInVertically { it / 2 }, exit = fadeOut(), modifier = Modifier.align(Alignment.BottomEnd)) {
-                FloatingActionButton(
-                    onClick = { triggerVibration(context, true); showDeleteDialog = true },
-                    containerColor = Color(0xFF2D1616),
-                    contentColor = Color.Red,
-                    shape = CircleShape,
-                    modifier = Modifier.padding(32.dp).navigationBarsPadding()
-                ) {
-                    Icon(Icons.Rounded.DeleteForever, contentDescription = "Delete Permanent", modifier = Modifier.size(32.dp))
+                    key(currentUri) {
+                        AsyncImage(
+                            model = currentUri,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y),
+                            contentScale = ContentScale.Fit,
+                            onError = { if (activeSessionList.isNotEmpty()) activeSessionList.removeAt(safeIndex) }
+                        )
+                    }
+
+                    if (uiVisible.value) {
+                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 40.dp).align(Alignment.TopCenter), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                            Button(onClick = { isPlaying = false }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(0.12f)), shape = RoundedCornerShape(16.dp)) { Text("Exit", color = Color.White) }
+                            IconButton(
+                                onClick = {
+                                    triggerVibration(context)
+                                    scope.launch {
+                                        if (isStarred && matchedFav != null) {
+                                            withContext(Dispatchers.IO) { try { context.contentResolver.delete(matchedFav.mediaUri, null, null) } catch (e: Exception) {} }
+                                            favoriteFiles = favoriteFiles.filter { it.mediaUri != matchedFav.mediaUri }
+                                            if (isFavoritesMode) {
+                                                activeSessionList.remove(currentUri)
+                                                if (activeSessionList.isEmpty()) isPlaying = false
+                                            }
+                                        } else {
+                                            val newUri = saveToFavoritesFolder(context, currentUri, currentFileName)
+                                            if (newUri != null) favoriteFiles = favoriteFiles + FavoriteFile("PR_$currentFileName", newUri)
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.size(56.dp).background(Color.White.copy(0.12f), RoundedCornerShape(20.dp))
+                            ) {
+                                Icon(imageVector = if (isStarred) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, contentDescription = null, tint = if (isStarred) Color(0xFFFF4081) else Color.White, modifier = Modifier.size(28.dp))
+                            }
+                            Button(onClick = { if (activeSessionList.isNotEmpty()) currentIndex.intValue = if (currentIndex.intValue > 0) currentIndex.intValue - 1 else activeSessionList.size - 1 }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(0.12f)), shape = RoundedCornerShape(16.dp)) { Text("Back", color = Color.White) }
+                        }
+
+                        if (!isFavoritesMode) {
+                            IconButton(
+                                onClick = { triggerVibration(context, true); showDeleteDialog = true },
+                                modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp).size(64.dp).background(Color.Red.copy(0.2f), CircleShape)
+                            ) {
+                                Icon(imageVector = Icons.Rounded.DeleteOutline, contentDescription = "Delete", tint = Color.Red, modifier = Modifier.size(32.dp))
+                            }
+                        }
+                    }
+
+                    if (showDeleteDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showDeleteDialog = false },
+                            title = { Text("Delete Photo?") },
+                            text = { Text("This will permanently remove this image from your device storage.") },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    showDeleteDialog = false
+                                    scope.launch {
+                                        val photoToDelete = currentUri
+                                        val originalIndex = currentIndex.intValue
+
+                                        // 1. Instantly hide it from the UI
+                                        activeSessionList.remove(photoToDelete)
+                                        if (activeSessionList.isEmpty()) isPlaying = false
+
+                                        // 2. Show Snackbar with Undo
+                                        val result = snackbarHostState.showSnackbar(
+                                            message = "Photo deleted",
+                                            actionLabel = "Undo",
+                                            duration = SnackbarDuration.Short
+                                        )
+
+                                        if (result == SnackbarResult.ActionPerformed) {
+                                            // 3. User clicked Undo - put it back
+                                            activeSessionList.add(originalIndex.coerceAtMost(activeSessionList.size), photoToDelete)
+                                            currentIndex.intValue = originalIndex
+                                        } else {
+                                            // 4. Actually delete from disk
+                                            withContext(Dispatchers.IO) {
+                                                try { context.contentResolver.delete(photoToDelete, null, null) } catch (e: Exception) {}
+                                            }
+                                        }
+                                    }
+                                }) { Text("Delete", color = Color.Red) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel", color = Color.White) }
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -464,20 +451,16 @@ fun PicRouletteApp() {
             Column(modifier = Modifier.fillMaxWidth().padding(bottom = 48.dp).padding(horizontal = 28.dp)) {
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     Text("Manage Folders", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White)
-                    IconButton(onClick = { launcher.launch(null) }, modifier = Modifier.background(Color(0xFF00BFA5), CircleShape)) {
-                        Icon(Icons.Rounded.Add, null, tint = Color.Black)
-                    }
+                    IconButton(onClick = { launcher.launch(null) }, modifier = Modifier.background(Color(0xFF00BFA5), CircleShape)) { Icon(Icons.Rounded.Add, null, tint = Color.Black) }
                 }
                 Spacer(Modifier.height(24.dp))
-                LazyColumn(modifier = Modifier.heightIn(max = 400.dp), contentPadding = PaddingValues(bottom = 32.dp)) {
+                LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
                     items(folderList.value.toList()) { uri ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(16.dp)).background(Color.White.copy(0.04f)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Rounded.Folder, null, tint = Color(0xFF00BFA5))
                             Spacer(Modifier.width(16.dp))
                             Text(uri.path?.split("/")?.lastOrNull() ?: "Folder", modifier = Modifier.weight(1f), color = Color.White, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            IconButton(onClick = { folderList.value -= uri; saveFolders(context, folderList.value); scope.launch { scanAllFolders() } }) {
-                                Icon(Icons.Rounded.DeleteOutline, null, tint = Color.Red.copy(0.6f))
-                            }
+                            IconButton(onClick = { folderList.value -= uri; saveFolders(context, folderList.value); scope.launch { scanAllFolders() } }) { Icon(Icons.Rounded.DeleteOutline, null, tint = Color.Red.copy(0.6f)) }
                         }
                     }
                 }
@@ -488,16 +471,9 @@ fun PicRouletteApp() {
 
 @Composable
 fun DashboardActionCard(title: String, subtitle: String, icon: ImageVector, color: Color, onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(28.dp),
-        color = Color.White.copy(0.04f),
-        modifier = Modifier.fillMaxWidth()
-    ) {
+    Surface(onClick = onClick, shape = RoundedCornerShape(28.dp), color = Color.White.copy(0.04f), modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(60.dp).clip(RoundedCornerShape(18.dp)).background(color.copy(0.12f)), Alignment.Center) {
-                Icon(icon, null, tint = color, modifier = Modifier.size(30.dp))
-            }
+            Box(Modifier.size(60.dp).clip(RoundedCornerShape(18.dp)).background(color.copy(0.12f)), Alignment.Center) { Icon(icon, null, tint = color, modifier = Modifier.size(30.dp)) }
             Spacer(Modifier.width(20.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 19.sp)
