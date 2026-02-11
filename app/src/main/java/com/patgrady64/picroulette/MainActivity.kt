@@ -201,7 +201,9 @@ fun PicRouletteApp() {
     var uiVisibleAnim by remember { mutableStateOf(false) }
 
     val currentIndex = remember { mutableIntStateOf(0) }
-    val uiVisible = remember { mutableStateOf(true) }
+    var uiVisible by remember { mutableStateOf(false) }
+    var showHint by remember { mutableStateOf(false) }
+
     val scale = remember { mutableFloatStateOf(1f) }
     val offset = remember { mutableStateOf(Offset.Zero) }
     val transformState = rememberTransformableState { z, o, _ -> scale.floatValue *= z; offset.value += o }
@@ -224,6 +226,14 @@ fun PicRouletteApp() {
     LaunchedEffect(currentIndex.intValue) {
         scale.floatValue = 1f
         offset.value = Offset.Zero
+    }
+
+    LaunchedEffect(isPlaying) {
+        if (isPlaying) {
+            showHint = true
+            delay(3000)
+            showHint = false
+        }
     }
 
     val scanAllFolders: suspend () -> Unit = {
@@ -272,6 +282,7 @@ fun PicRouletteApp() {
                                     if (pickedFolderImages.value.isNotEmpty()) {
                                         triggerVibration(context, true)
                                         isFavoritesMode = false
+                                        uiVisible = false
                                         activeSessionList.clear()
                                         activeSessionList.addAll(pickedFolderImages.value.shuffled())
                                         currentIndex.intValue = 0
@@ -301,6 +312,7 @@ fun PicRouletteApp() {
                                 if (favoriteFiles.isNotEmpty()) {
                                     triggerVibration(context)
                                     isFavoritesMode = true
+                                    uiVisible = false
                                     activeSessionList.clear()
                                     activeSessionList.addAll(favoriteFiles.map { it.mediaUri }.shuffled())
                                     currentIndex.intValue = 0
@@ -332,7 +344,10 @@ fun PicRouletteApp() {
                             }
                         }
                     },
-                    onLongClick = { uiVisible.value = !uiVisible.value }
+                    onLongClick = {
+                        triggerVibration(context)
+                        uiVisible = !uiVisible
+                    }
                 )
             ) {
                 val safeIndex = currentIndex.intValue.coerceIn(0, activeSessionList.size.coerceAtLeast(1) - 1)
@@ -360,39 +375,88 @@ fun PicRouletteApp() {
                         )
                     }
 
-                    if (uiVisible.value) {
-                        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 40.dp).align(Alignment.TopCenter), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                            Button(onClick = { isPlaying = false }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(0.12f)), shape = RoundedCornerShape(16.dp)) { Text("Exit", color = Color.White) }
-                            IconButton(
-                                onClick = {
-                                    triggerVibration(context)
-                                    scope.launch {
-                                        if (isStarred && matchedFav != null) {
-                                            withContext(Dispatchers.IO) { try { context.contentResolver.delete(matchedFav.mediaUri, null, null) } catch (e: Exception) {} }
-                                            favoriteFiles = favoriteFiles.filter { it.mediaUri != matchedFav.mediaUri }
-                                            if (isFavoritesMode) {
-                                                activeSessionList.remove(currentUri)
-                                                if (activeSessionList.isEmpty()) isPlaying = false
-                                            }
-                                        } else {
-                                            val newUri = saveToFavoritesFolder(context, currentUri, currentFileName)
-                                            if (newUri != null) favoriteFiles = favoriteFiles + FavoriteFile("PR_$currentFileName", newUri)
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.size(56.dp).background(Color.White.copy(0.12f), RoundedCornerShape(20.dp))
-                            ) {
-                                Icon(imageVector = if (isStarred) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, contentDescription = null, tint = if (isStarred) Color(0xFFFF4081) else Color.White, modifier = Modifier.size(28.dp))
-                            }
-                            Button(onClick = { if (activeSessionList.isNotEmpty()) currentIndex.intValue = if (currentIndex.intValue > 0) currentIndex.intValue - 1 else activeSessionList.size - 1 }, colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(0.12f)), shape = RoundedCornerShape(16.dp)) { Text("Back", color = Color.White) }
+                    // --- LONG-PRESS HINT ---
+                    AnimatedVisibility(
+                        visible = showHint && !uiVisible,
+                        enter = fadeIn(),
+                        exit = fadeOut(),
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp)
+                    ) {
+                        Surface(
+                            color = Color.Black.copy(0.7f),
+                            shape = RoundedCornerShape(24.dp),
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            Text(
+                                "Long-press for menu",
+                                color = Color.White,
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium
+                            )
                         }
+                    }
 
-                        if (!isFavoritesMode) {
-                            IconButton(
-                                onClick = { triggerVibration(context, true); showDeleteDialog = true },
-                                modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp).size(64.dp).background(Color.Red.copy(0.2f), CircleShape)
-                            ) {
-                                Icon(imageVector = Icons.Rounded.DeleteOutline, contentDescription = "Delete", tint = Color.Red, modifier = Modifier.size(32.dp))
+                    // --- THE UI OVERLAY ---
+                    AnimatedVisibility(
+                        visible = uiVisible,
+                        enter = fadeIn() + slideInVertically(),
+                        exit = fadeOut() + slideOutVertically()
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            // Top Scrim (Gradient to make top buttons visible on white backgrounds)
+                            Box(modifier = Modifier.fillMaxWidth().height(160.dp).align(Alignment.TopCenter)
+                                .background(Brush.verticalGradient(listOf(Color.Black.copy(0.5f), Color.Transparent))))
+
+                            // Bottom-Right Scrim (Gradient for delete button)
+                            Box(modifier = Modifier.size(160.dp).align(Alignment.BottomEnd)
+                                .background(Brush.radialGradient(listOf(Color.Black.copy(0.4f), Color.Transparent))))
+
+                            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 40.dp).align(Alignment.TopCenter), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                                Button(
+                                    onClick = { isPlaying = false },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(0.4f)),
+                                    shape = RoundedCornerShape(16.dp)
+                                ) { Text("Exit", color = Color.White) }
+
+                                IconButton(
+                                    onClick = {
+                                        triggerVibration(context)
+                                        scope.launch {
+                                            if (isStarred && matchedFav != null) {
+                                                withContext(Dispatchers.IO) { try { context.contentResolver.delete(matchedFav.mediaUri, null, null) } catch (e: Exception) {} }
+                                                favoriteFiles = favoriteFiles.filter { it.mediaUri != matchedFav.mediaUri }
+                                                if (isFavoritesMode) {
+                                                    activeSessionList.remove(currentUri)
+                                                    if (activeSessionList.isEmpty()) isPlaying = false
+                                                }
+                                            } else {
+                                                val newUri = saveToFavoritesFolder(context, currentUri, currentFileName)
+                                                if (newUri != null) favoriteFiles = favoriteFiles + FavoriteFile("PR_$currentFileName", newUri)
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.size(56.dp).background(Color.Black.copy(0.4f), RoundedCornerShape(20.dp))
+                                ) {
+                                    Icon(imageVector = if (isStarred) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, contentDescription = null, tint = if (isStarred) Color(0xFFFF4081) else Color.White, modifier = Modifier.size(28.dp))
+                                }
+
+                                Button(
+                                    onClick = { if (activeSessionList.isNotEmpty()) currentIndex.intValue = if (currentIndex.intValue > 0) currentIndex.intValue - 1 else activeSessionList.size - 1 },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(0.4f)),
+                                    shape = RoundedCornerShape(16.dp)
+                                ) { Text("Back", color = Color.White) }
+                            }
+
+                            if (!isFavoritesMode) {
+                                IconButton(
+                                    onClick = { triggerVibration(context, true); showDeleteDialog = true },
+                                    modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp).size(64.dp).background(Color.Black.copy(0.3f), CircleShape)
+                                ) {
+                                    Box(Modifier.fillMaxSize().background(Color.Red.copy(0.2f), CircleShape), contentAlignment = Alignment.Center) {
+                                        Icon(imageVector = Icons.Rounded.DeleteOutline, contentDescription = "Delete", tint = Color.Red, modifier = Modifier.size(32.dp))
+                                    }
+                                }
                             }
                         }
                     }
@@ -408,24 +472,17 @@ fun PicRouletteApp() {
                                     scope.launch {
                                         val photoToDelete = currentUri
                                         val originalIndex = currentIndex.intValue
-
-                                        // 1. Instantly hide it from the UI
                                         activeSessionList.remove(photoToDelete)
                                         if (activeSessionList.isEmpty()) isPlaying = false
-
-                                        // 2. Show Snackbar with Undo
                                         val result = snackbarHostState.showSnackbar(
                                             message = "Photo deleted",
                                             actionLabel = "Undo",
                                             duration = SnackbarDuration.Short
                                         )
-
                                         if (result == SnackbarResult.ActionPerformed) {
-                                            // 3. User clicked Undo - put it back
                                             activeSessionList.add(originalIndex.coerceAtMost(activeSessionList.size), photoToDelete)
                                             currentIndex.intValue = originalIndex
                                         } else {
-                                            // 4. Actually delete from disk
                                             withContext(Dispatchers.IO) {
                                                 try { context.contentResolver.delete(photoToDelete, null, null) } catch (e: Exception) {}
                                             }
