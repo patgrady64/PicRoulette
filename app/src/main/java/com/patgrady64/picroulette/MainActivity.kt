@@ -10,6 +10,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -42,9 +43,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -57,19 +57,38 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 
 // --- DATA MODELS ---
 data class FavoriteFile(val fileNameOnDisk: String, val mediaUri: Uri)
+data class FolderConfig(val uri: Uri, val includeSubfolders: Boolean = true)
 
-// --- HELPERS ---
-fun saveFolders(context: Context, uris: Set<Uri>) {
+// --- STORAGE HELPERS ---
+fun saveFolders(context: Context, folders: List<FolderConfig>) {
     val prefs = context.getSharedPreferences("PicRoulettePrefs", Context.MODE_PRIVATE)
-    prefs.edit().putStringSet("folder_uris", uris.map { it.toString() }.toSet()).apply()
+    val array = JSONArray()
+    folders.forEach {
+        val obj = JSONObject()
+        obj.put("uri", it.uri.toString())
+        obj.put("subfolders", it.includeSubfolders)
+        array.put(obj)
+    }
+    prefs.edit().putString("folder_configs_json", array.toString()).apply()
 }
 
-fun getSavedFolders(context: Context): Set<Uri> {
+fun getSavedFolders(context: Context): List<FolderConfig> {
     val prefs = context.getSharedPreferences("PicRoulettePrefs", Context.MODE_PRIVATE)
-    return prefs.getStringSet("folder_uris", emptySet())?.map { Uri.parse(it) }?.toSet() ?: emptySet()
+    val json = prefs.getString("folder_configs_json", null) ?: return emptyList()
+    val list = mutableListOf<FolderConfig>()
+    try {
+        val array = JSONArray(json)
+        for (i in 0 until array.length()) {
+            val obj = array.getJSONObject(i)
+            list.add(FolderConfig(Uri.parse(obj.getString("uri")), obj.getBoolean("subfolders")))
+        }
+    } catch (e: Exception) {}
+    return list
 }
 
 fun triggerVibration(context: Context, long: Boolean = false) {
@@ -84,15 +103,15 @@ fun triggerVibration(context: Context, long: Boolean = false) {
     }
 }
 
-// --- FILE LOGIC ---
-fun queryAllImagesInTree(context: Context, treeUri: Uri): List<Uri> {
+// --- SCANNING LOGIC ---
+fun queryImagesInFolder(context: Context, config: FolderConfig): List<Uri> {
     val allImages = mutableListOf<Uri>()
-    val rootDocId = DocumentsContract.getTreeDocumentId(treeUri)
-    scanDirectoryRecursive(context, treeUri, rootDocId, allImages)
+    val rootDocId = try { DocumentsContract.getTreeDocumentId(config.uri) } catch (e: Exception) { return emptyList() }
+    scanDirectory(context, config.uri, rootDocId, allImages, config.includeSubfolders)
     return allImages
 }
 
-private fun scanDirectoryRecursive(context: Context, treeUri: Uri, parentDocId: String, resultList: MutableList<Uri>) {
+private fun scanDirectory(context: Context, treeUri: Uri, parentDocId: String, resultList: MutableList<Uri>, recursive: Boolean) {
     val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
     val projection = arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_MIME_TYPE)
     try {
@@ -101,9 +120,10 @@ private fun scanDirectoryRecursive(context: Context, treeUri: Uri, parentDocId: 
             val mimeCol = cursor.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
             while (cursor.moveToNext()) {
                 val docId = cursor.getString(idCol)
-                if (cursor.getString(mimeCol) == DocumentsContract.Document.MIME_TYPE_DIR) {
-                    scanDirectoryRecursive(context, treeUri, docId, resultList)
-                } else if (cursor.getString(mimeCol)?.startsWith("image/") == true) {
+                val mime = cursor.getString(mimeCol)
+                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    if (recursive) scanDirectory(context, treeUri, docId, resultList, true)
+                } else if (mime?.startsWith("image/") == true) {
                     resultList.add(DocumentsContract.buildDocumentUriUsingTree(treeUri, docId))
                 }
             }
@@ -146,35 +166,37 @@ suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: St
     }
 }
 
+// --- MAIN ACTIVITY ---
 class MainActivity : ComponentActivity() {
     private var isAppReady = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
+        super.onCreate(savedInstanceState)
+
         splashScreen.setKeepOnScreenCondition { !isAppReady }
 
-        splashScreen.setOnExitAnimationListener { splashProvider ->
-            val slideUp = android.view.animation.TranslateAnimation(0f, 0f, 0f, -splashProvider.view.height.toFloat()).apply {
-                duration = 400
-                interpolator = android.view.animation.AnticipateInterpolator()
-                fillAfter = true
-            }
-            splashProvider.iconView.startAnimation(slideUp)
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ splashProvider.remove() }, 400)
-        }
-
-        super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
-        lifecycleScope.launch { delay(1500); isAppReady = true }
+        lifecycleScope.launch { delay(800); isAppReady = true }
 
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            val rouletteYellow = Color(0xFFFFD700)
+            val customColorScheme = darkColorScheme(
+                primary = rouletteYellow,
+                onPrimary = Color.Black,
+                secondary = rouletteYellow,
+                onSecondary = Color.Black,
+                surface = Color(0xFF0A0A0A),
+                background = Color(0xFF0A0A0A)
+            )
+
+            MaterialTheme(colorScheme = customColorScheme) {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) {
-                    PicRouletteApp()
+                    PicRouletteApp(rouletteYellow)
                 }
             }
         }
@@ -183,13 +205,16 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun PicRouletteApp() {
+fun PicRouletteApp(themeColor: Color) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    val folderList = remember { mutableStateOf(getSavedFolders(context)) }
+    // States
+    var folderConfigs by remember { mutableStateOf(getSavedFolders(context)) }
     val pickedFolderImages = remember { mutableStateOf<List<Uri>>(emptyList()) }
+    val scanningUris = remember { mutableStateListOf<Uri>() }
+    val folderPhotoCounts = remember { mutableStateMapOf<Uri, Int>() }
     val activeSessionList = remember { mutableStateListOf<Uri>() }
     var favoriteFiles by remember { mutableStateOf<List<FavoriteFile>>(emptyList()) }
 
@@ -199,58 +224,69 @@ fun PicRouletteApp() {
     val isScanning = remember { mutableStateOf(false) }
     var showSheet by remember { mutableStateOf(false) }
     var uiVisibleAnim by remember { mutableStateOf(false) }
-
     val currentIndex = remember { mutableIntStateOf(0) }
     var uiVisible by remember { mutableStateOf(false) }
-    var showHint by remember { mutableStateOf(false) }
 
+    // KEEP SCREEN ON LOGIC
+    val currentView = LocalView.current
+    DisposableEffect(isPlaying) {
+        if (isPlaying) {
+            currentView.keepScreenOn = true
+        }
+        onDispose {
+            currentView.keepScreenOn = false
+        }
+    }
+
+    // Gestures
     val scale = remember { mutableFloatStateOf(1f) }
     val offset = remember { mutableStateOf(Offset.Zero) }
     val transformState = rememberTransformableState { z, o, _ -> scale.floatValue *= z; offset.value += o }
 
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 1f, targetValue = 1.15f,
-        animationSpec = infiniteRepeatable(animation = tween(1000, easing = FastOutSlowInEasing), repeatMode = RepeatMode.Reverse),
+        initialValue = 1f, targetValue = 1.12f,
+        animationSpec = infiniteRepeatable(animation = tween(1200, easing = FastOutSlowInEasing), repeatMode = RepeatMode.Reverse),
         label = "pulseScale"
     )
 
-    fun refreshFavs() { scope.launch(Dispatchers.IO) { favoriteFiles = getFavoritesList(context) } }
-
-    LaunchedEffect(Unit) {
-        refreshFavs()
-        delay(1600)
-        uiVisibleAnim = true
-    }
-
-    LaunchedEffect(currentIndex.intValue) {
-        scale.floatValue = 1f
-        offset.value = Offset.Zero
-    }
-
-    LaunchedEffect(isPlaying) {
-        if (isPlaying) {
-            showHint = true
-            delay(3000)
-            showHint = false
+    fun refreshFavs() {
+        scope.launch(Dispatchers.IO) {
+            val list = getFavoritesList(context)
+            withContext(Dispatchers.Main) { favoriteFiles = list.toList() }
         }
     }
 
     val scanAllFolders: suspend () -> Unit = {
         isScanning.value = true
-        val all = mutableListOf<Uri>()
+        val allImages = mutableListOf<Uri>()
         withContext(Dispatchers.IO) {
-            folderList.value.forEach { uri ->
+            folderConfigs.forEach { config ->
+                launch(Dispatchers.Main) { scanningUris.add(config.uri) }
                 try {
-                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    all.addAll(queryAllImagesInTree(context, uri))
-                } catch (e: Exception) {}
+                    context.contentResolver.takePersistableUriPermission(config.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    val images = queryImagesInFolder(context, config)
+                    launch(Dispatchers.Main) {
+                        folderPhotoCounts[config.uri] = images.size
+                        scanningUris.remove(config.uri)
+                    }
+                    allImages.addAll(images)
+                } catch (e: Exception) {
+                    launch(Dispatchers.Main) { scanningUris.remove(config.uri) }
+                }
             }
         }
-        pickedFolderImages.value = all
+        pickedFolderImages.value = allImages
         isScanning.value = false
     }
-    LaunchedEffect(Unit) { scanAllFolders() }
+
+    LaunchedEffect(Unit) {
+        refreshFavs()
+        scanAllFolders()
+        delay(500); uiVisibleAnim = true
+    }
+
+    LaunchedEffect(currentIndex.intValue) { scale.floatValue = 1f; offset.value = Offset.Zero }
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -263,60 +299,40 @@ fun PicRouletteApp() {
                         colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Transparent, titleContentColor = Color.White),
                         title = {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("PicRoulette", fontWeight = FontWeight.Black, fontSize = 32.sp, letterSpacing = (-1).sp)
-                                Text("Rediscover your library", style = MaterialTheme.typography.labelMedium, color = Color.Gray.copy(0.8f))
+                                Text("PicRoulette", fontWeight = FontWeight.Black, fontSize = 32.sp)
+                                Text("Rediscover your library", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
                             }
                         },
                         actions = {
                             IconButton(
                                 onClick = { triggerVibration(context); scope.launch { scanAllFolders(); refreshFavs() } },
-                                modifier = Modifier.padding(end = 16.dp).scale(if (isScanning.value) pulseScale else 1f).background(if (isScanning.value) MaterialTheme.colorScheme.primary.copy(0.15f) else Color.White.copy(0.05f), CircleShape)
-                            ) { Icon(Icons.Rounded.Refresh, null, tint = if (isScanning.value) MaterialTheme.colorScheme.primary else Color.White) }
+                                modifier = Modifier.padding(end = 16.dp).scale(if (isScanning.value) pulseScale else 1f)
+                            ) { Icon(Icons.Rounded.Refresh, null, tint = if (isScanning.value) themeColor else Color.White) }
                         }
                     )
-                    AnimatedVisibility(visible = uiVisibleAnim, enter = fadeIn(tween(800)) + slideInVertically(tween(800)) { it / 15 }) {
+                    AnimatedVisibility(visible = uiVisibleAnim, enter = fadeIn() + slideInVertically()) {
                         Column(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
                             Spacer(Modifier.height(24.dp))
-                            Box(modifier = Modifier.fillMaxWidth().height(240.dp).clip(RoundedCornerShape(32.dp)).background(Brush.linearGradient(listOf(Color(0xFF7C4DFF), Color(0xFF00BFA5))))
+                            Box(modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(32.dp)).background(Brush.linearGradient(listOf(Color(0xFF7C4DFF), themeColor)))
                                 .clickable {
                                     if (pickedFolderImages.value.isNotEmpty()) {
                                         triggerVibration(context, true)
-                                        isFavoritesMode = false
-                                        uiVisible = false
-                                        activeSessionList.clear()
-                                        activeSessionList.addAll(pickedFolderImages.value.shuffled())
-                                        currentIndex.intValue = 0
-                                        isPlaying = true
+                                        isFavoritesMode = false; uiVisible = false; activeSessionList.clear(); activeSessionList.addAll(pickedFolderImages.value.shuffled()); currentIndex.intValue = 0; isPlaying = true
                                     }
                                 }
                             ) {
-                                val shimmerAlpha by infiniteTransition.animateFloat(initialValue = 0.1f, targetValue = 0.25f, animationSpec = infiniteRepeatable(tween(1500), RepeatMode.Reverse), label = "")
-                                Box(Modifier.fillMaxSize().background(Color.White.copy(shimmerAlpha)))
-                                Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(260.dp).align(Alignment.CenterEnd).offset(x = 80.dp).graphicsLayer(alpha = 0.15f), tint = Color.White)
+                                Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(240.dp).align(Alignment.CenterEnd).offset(x = 60.dp).graphicsLayer(alpha = 0.1f), tint = Color.White)
                                 Column(modifier = Modifier.padding(32.dp).align(Alignment.BottomStart)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (isScanning.value) CircularProgressIndicator(modifier = Modifier.size(14.dp), color = Color.White.copy(0.7f), strokeWidth = 2.dp)
-                                        else Icon(Icons.Rounded.PhotoLibrary, null, modifier = Modifier.size(16.dp), tint = Color.White.copy(0.7f))
-                                        Spacer(Modifier.width(8.dp))
-                                        Text("${pickedFolderImages.value.size} PHOTOS", color = Color.White.copy(0.7f), fontWeight = FontWeight.Bold, fontSize = 12.sp, letterSpacing = 1.sp)
-                                    }
-                                    Text(if (isScanning.value) "Syncing..." else "Start Roulette", color = Color.White, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black)
+                                    Text("${pickedFolderImages.value.size} PHOTOS", color = Color.White.copy(0.7f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text(if (isScanning.value) "Scanning..." else "Start Roulette", color = Color.White, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black)
                                 }
                             }
-                            Spacer(Modifier.height(48.dp))
-                            Text("COLLECTIONS", color = Color.Gray.copy(0.5f), fontWeight = FontWeight.Bold, fontSize = 11.sp, letterSpacing = 2.sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
-                            Spacer(Modifier.height(24.dp))
-                            DashboardActionCard("Library Folders", "${folderList.value.size} folders linked", Icons.Rounded.FolderCopy, Color(0xFFBB86FC)) { triggerVibration(context); showSheet = true }
+                            Spacer(Modifier.height(40.dp))
+                            DashboardActionCard("Library Folders", "${folderConfigs.size} folders linked", Icons.Rounded.FolderCopy, Color(0xFFBB86FC)) { triggerVibration(context); showSheet = true }
                             Spacer(Modifier.height(16.dp))
                             DashboardActionCard("Your Favorites", "${favoriteFiles.size} images saved", Icons.Rounded.Favorite, Color(0xFFFF4081)) {
                                 if (favoriteFiles.isNotEmpty()) {
-                                    triggerVibration(context)
-                                    isFavoritesMode = true
-                                    uiVisible = false
-                                    activeSessionList.clear()
-                                    activeSessionList.addAll(favoriteFiles.map { it.mediaUri }.shuffled())
-                                    currentIndex.intValue = 0
-                                    isPlaying = true
+                                    triggerVibration(context); isFavoritesMode = true; uiVisible = false; activeSessionList.clear(); activeSessionList.addAll(favoriteFiles.map { it.mediaUri }.shuffled()); currentIndex.intValue = 0; isPlaying = true
                                 }
                             }
                         }
@@ -324,35 +340,15 @@ fun PicRouletteApp() {
                 }
             }
         } else {
-            // --- VIEWER MODE ---
+            // VIEWER
             Box(modifier = Modifier.fillMaxSize().background(Color.Black).transformable(state = transformState)
                 .combinedClickable(
-                    onClick = {
-                        if (activeSessionList.isNotEmpty()) {
-                            if (currentIndex.intValue >= activeSessionList.size - 1) {
-                                val lastUri = activeSessionList[currentIndex.intValue]
-                                val reshuffled = activeSessionList.shuffled()
-                                activeSessionList.clear()
-                                activeSessionList.addAll(reshuffled)
-                                if (activeSessionList.size > 1 && activeSessionList[0] == lastUri) {
-                                    val first = activeSessionList.removeAt(0)
-                                    activeSessionList.add(first)
-                                }
-                                currentIndex.intValue = 0
-                            } else {
-                                currentIndex.intValue += 1
-                            }
-                        }
-                    },
-                    onLongClick = {
-                        triggerVibration(context)
-                        uiVisible = !uiVisible
-                    }
+                    onClick = { if (activeSessionList.isNotEmpty()) { if (currentIndex.intValue >= activeSessionList.size - 1) { activeSessionList.shuffle(); currentIndex.intValue = 0 } else currentIndex.intValue += 1 } },
+                    onLongClick = { triggerVibration(context); uiVisible = !uiVisible }
                 )
             ) {
-                val safeIndex = currentIndex.intValue.coerceIn(0, activeSessionList.size.coerceAtLeast(1) - 1)
-                if (activeSessionList.isEmpty()) { isPlaying = false } else {
-                    val currentUri = activeSessionList[safeIndex]
+                val currentUri = activeSessionList.getOrNull(currentIndex.intValue)
+                if (currentUri != null) {
                     val currentFileName = remember(currentUri) {
                         var name = ""
                         try {
@@ -360,92 +356,45 @@ fun PicRouletteApp() {
                                 if (it.moveToFirst()) name = it.getString(0)
                             }
                         } catch (e: Exception) {}
-                        name.ifEmpty { currentUri.lastPathSegment ?: "unknown" }
-                    }
-                    val matchedFav = favoriteFiles.find { it.fileNameOnDisk == currentFileName || it.fileNameOnDisk == "PR_$currentFileName" || currentFileName == "PR_${it.fileNameOnDisk}" }
-                    val isStarred = matchedFav != null
-
-                    key(currentUri) {
-                        AsyncImage(
-                            model = currentUri,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y),
-                            contentScale = ContentScale.Fit,
-                            onError = { if (activeSessionList.isNotEmpty()) activeSessionList.removeAt(safeIndex) }
-                        )
+                        name.ifEmpty { currentUri.lastPathSegment ?: "img" }
                     }
 
-                    // --- LONG-PRESS HINT ---
-                    AnimatedVisibility(
-                        visible = showHint && !uiVisible,
-                        enter = fadeIn(),
-                        exit = fadeOut(),
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp)
-                    ) {
-                        Surface(
-                            color = Color.Black.copy(0.7f),
-                            shape = RoundedCornerShape(24.dp),
-                            modifier = Modifier.padding(16.dp)
-                        ) {
-                            Text(
-                                "Long-press for menu",
-                                color = Color.White,
-                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
-                    }
+                    val isHeartFilled = favoriteFiles.any { it.fileNameOnDisk == "PR_$currentFileName" || it.fileNameOnDisk == currentFileName }
 
-                    // --- THE UI OVERLAY ---
-                    AnimatedVisibility(
-                        visible = uiVisible,
-                        enter = fadeIn() + slideInVertically(),
-                        exit = fadeOut() + slideOutVertically()
-                    ) {
+                    AsyncImage(model = currentUri, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y), contentScale = ContentScale.Fit)
+
+                    AnimatedVisibility(visible = uiVisible, enter = fadeIn() + slideInVertically(), exit = fadeOut() + slideOutVertically()) {
                         Box(modifier = Modifier.fillMaxSize()) {
-                            // Top Scrim (Gradient to make top buttons visible on white backgrounds)
-                            Box(modifier = Modifier.fillMaxWidth().height(160.dp).align(Alignment.TopCenter)
-                                .background(Brush.verticalGradient(listOf(Color.Black.copy(0.5f), Color.Transparent))))
-
-                            // Bottom-Right Scrim (Gradient for delete button)
-                            Box(modifier = Modifier.size(160.dp).align(Alignment.BottomEnd)
-                                .background(Brush.radialGradient(listOf(Color.Black.copy(0.4f), Color.Transparent))))
+                            Box(modifier = Modifier.fillMaxWidth().height(140.dp).align(Alignment.TopCenter).background(Brush.verticalGradient(listOf(Color.Black.copy(0.6f), Color.Transparent))))
 
                             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 40.dp).align(Alignment.TopCenter), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                                Button(
-                                    onClick = { isPlaying = false },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(0.4f)),
-                                    shape = RoundedCornerShape(16.dp)
-                                ) { Text("Exit", color = Color.White) }
+                                Button(onClick = { isPlaying = false }) { Text("Exit") }
 
-                                IconButton(
-                                    onClick = {
+                                key(currentUri, isHeartFilled) {
+                                    IconButton(onClick = {
                                         triggerVibration(context)
                                         scope.launch {
-                                            if (isStarred && matchedFav != null) {
-                                                withContext(Dispatchers.IO) { try { context.contentResolver.delete(matchedFav.mediaUri, null, null) } catch (e: Exception) {} }
-                                                favoriteFiles = favoriteFiles.filter { it.mediaUri != matchedFav.mediaUri }
-                                                if (isFavoritesMode) {
-                                                    activeSessionList.remove(currentUri)
-                                                    if (activeSessionList.isEmpty()) isPlaying = false
+                                            if (isHeartFilled) {
+                                                val toDelete = favoriteFiles.find { it.fileNameOnDisk == "PR_$currentFileName" || it.fileNameOnDisk == currentFileName }
+                                                toDelete?.let {
+                                                    withContext(Dispatchers.IO) { context.contentResolver.delete(it.mediaUri, null, null) }
                                                 }
                                             } else {
-                                                val newUri = saveToFavoritesFolder(context, currentUri, currentFileName)
-                                                if (newUri != null) favoriteFiles = favoriteFiles + FavoriteFile("PR_$currentFileName", newUri)
+                                                saveToFavoritesFolder(context, currentUri, currentFileName)
                                             }
+                                            refreshFavs()
                                         }
-                                    },
-                                    modifier = Modifier.size(56.dp).background(Color.Black.copy(0.4f), RoundedCornerShape(20.dp))
-                                ) {
-                                    Icon(imageVector = if (isStarred) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, contentDescription = null, tint = if (isStarred) Color(0xFFFF4081) else Color.White, modifier = Modifier.size(28.dp))
+                                    }, modifier = Modifier.background(Color.Black.copy(0.5f), CircleShape).size(56.dp)) {
+                                        Icon(
+                                            imageVector = if (isHeartFilled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                            null,
+                                            tint = Color.Red,
+                                            modifier = Modifier.size(36.dp)
+                                        )
+                                    }
                                 }
 
-                                Button(
-                                    onClick = { if (activeSessionList.isNotEmpty()) currentIndex.intValue = if (currentIndex.intValue > 0) currentIndex.intValue - 1 else activeSessionList.size - 1 },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(0.4f)),
-                                    shape = RoundedCornerShape(16.dp)
-                                ) { Text("Back", color = Color.White) }
+                                Button(onClick = { if (currentIndex.intValue > 0) currentIndex.intValue -= 1 }) { Text("Back") }
                             }
 
                             if (!isFavoritesMode) {
@@ -453,8 +402,8 @@ fun PicRouletteApp() {
                                     onClick = { triggerVibration(context, true); showDeleteDialog = true },
                                     modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp).size(64.dp).background(Color.Black.copy(0.3f), CircleShape)
                                 ) {
-                                    Box(Modifier.fillMaxSize().background(Color.Red.copy(0.2f), CircleShape), contentAlignment = Alignment.Center) {
-                                        Icon(imageVector = Icons.Rounded.DeleteOutline, contentDescription = "Delete", tint = Color.Red, modifier = Modifier.size(32.dp))
+                                    Box(Modifier.fillMaxSize().background(Color.Red.copy(0.15f), CircleShape), contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Rounded.DeleteOutline, "Delete", tint = Color.Red, modifier = Modifier.size(32.dp))
                                     }
                                 }
                             }
@@ -465,33 +414,23 @@ fun PicRouletteApp() {
                         AlertDialog(
                             onDismissRequest = { showDeleteDialog = false },
                             title = { Text("Delete Photo?") },
-                            text = { Text("This will permanently remove this image from your device storage.") },
+                            text = { Text("This image will be permanently removed from your device.") },
                             confirmButton = {
                                 TextButton(onClick = {
                                     showDeleteDialog = false
                                     scope.launch {
                                         val photoToDelete = currentUri
-                                        val originalIndex = currentIndex.intValue
                                         activeSessionList.remove(photoToDelete)
                                         if (activeSessionList.isEmpty()) isPlaying = false
-                                        val result = snackbarHostState.showSnackbar(
-                                            message = "Photo deleted",
-                                            actionLabel = "Undo",
-                                            duration = SnackbarDuration.Short
-                                        )
-                                        if (result == SnackbarResult.ActionPerformed) {
-                                            activeSessionList.add(originalIndex.coerceAtMost(activeSessionList.size), photoToDelete)
-                                            currentIndex.intValue = originalIndex
-                                        } else {
-                                            withContext(Dispatchers.IO) {
-                                                try { context.contentResolver.delete(photoToDelete, null, null) } catch (e: Exception) {}
-                                            }
+                                        withContext(Dispatchers.IO) {
+                                            try { context.contentResolver.delete(photoToDelete, null, null) } catch (e: Exception) {}
                                         }
+                                        scanAllFolders()
                                     }
                                 }) { Text("Delete", color = Color.Red) }
                             },
                             dismissButton = {
-                                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel", color = Color.White) }
+                                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
                             }
                         )
                     }
@@ -501,23 +440,44 @@ fun PicRouletteApp() {
     }
 
     if (showSheet) {
-        ModalBottomSheet(onDismissRequest = { showSheet = false }, containerColor = Color(0xFF141414), dragHandle = { BottomSheetDefaults.DragHandle(color = Color.DarkGray) }) {
+        ModalBottomSheet(onDismissRequest = { showSheet = false }, containerColor = Color(0xFF141414)) {
             val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-                uri?.let { folderList.value += it; saveFolders(context, folderList.value); scope.launch { scanAllFolders() } }
+                uri?.let { folderConfigs = folderConfigs + FolderConfig(it); saveFolders(context, folderConfigs); scope.launch { scanAllFolders() } }
             }
-            Column(modifier = Modifier.fillMaxWidth().padding(bottom = 48.dp).padding(horizontal = 28.dp)) {
+            Column(modifier = Modifier.fillMaxWidth().padding(bottom = 48.dp).padding(horizontal = 24.dp)) {
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     Text("Manage Folders", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White)
-                    IconButton(onClick = { launcher.launch(null) }, modifier = Modifier.background(Color(0xFF00BFA5), CircleShape)) { Icon(Icons.Rounded.Add, null, tint = Color.Black) }
+                    IconButton(onClick = { launcher.launch(null) }, modifier = Modifier.background(themeColor, CircleShape)) { Icon(Icons.Rounded.Add, null, tint = Color.Black) }
                 }
                 Spacer(Modifier.height(24.dp))
                 LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
-                    items(folderList.value.toList()) { uri ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(16.dp)).background(Color.White.copy(0.04f)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Rounded.Folder, null, tint = Color(0xFF00BFA5))
-                            Spacer(Modifier.width(16.dp))
-                            Text(uri.path?.split("/")?.lastOrNull() ?: "Folder", modifier = Modifier.weight(1f), color = Color.White, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            IconButton(onClick = { folderList.value -= uri; saveFolders(context, folderList.value); scope.launch { scanAllFolders() } }) { Icon(Icons.Rounded.DeleteOutline, null, tint = Color.Red.copy(0.6f)) }
+                    items(folderConfigs) { config ->
+                        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp).clip(RoundedCornerShape(20.dp)).background(Color.White.copy(0.04f)).padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Rounded.Folder, null, tint = themeColor)
+                                Spacer(Modifier.width(12.dp))
+                                Text(config.uri.path?.split("/")?.lastOrNull() ?: "Folder", modifier = Modifier.weight(1f), color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1)
+
+                                if (scanningUris.contains(config.uri)) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = themeColor)
+                                } else {
+                                    Text("${folderPhotoCounts[config.uri] ?: 0}", color = themeColor, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                }
+
+                                IconButton(onClick = { folderConfigs = folderConfigs.filter { it.uri != config.uri }; saveFolders(context, folderConfigs); scope.launch { scanAllFolders() } }) { Icon(Icons.Rounded.DeleteOutline, null, tint = Color.Red.copy(0.7f)) }
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
+                                Text("Include subfolders", color = Color.Gray, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                                Switch(
+                                    checked = config.includeSubfolders,
+                                    onCheckedChange = { isChecked ->
+                                        folderConfigs = folderConfigs.map { if (it.uri == config.uri) it.copy(includeSubfolders = isChecked) else it }
+                                        saveFolders(context, folderConfigs)
+                                        scope.launch { scanAllFolders() }
+                                    },
+                                    colors = SwitchDefaults.colors(checkedThumbColor = themeColor)
+                                )
+                            }
                         }
                     }
                 }
@@ -530,11 +490,11 @@ fun PicRouletteApp() {
 fun DashboardActionCard(title: String, subtitle: String, icon: ImageVector, color: Color, onClick: () -> Unit) {
     Surface(onClick = onClick, shape = RoundedCornerShape(28.dp), color = Color.White.copy(0.04f), modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(60.dp).clip(RoundedCornerShape(18.dp)).background(color.copy(0.12f)), Alignment.Center) { Icon(icon, null, tint = color, modifier = Modifier.size(30.dp)) }
-            Spacer(Modifier.width(20.dp))
+            Box(Modifier.size(54.dp).clip(RoundedCornerShape(16.dp)).background(color.copy(0.12f)), Alignment.Center) { Icon(icon, null, tint = color, modifier = Modifier.size(28.dp)) }
+            Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 19.sp)
-                Text(subtitle, color = Color.Gray.copy(0.8f), fontSize = 14.sp)
+                Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                Text(subtitle, color = Color.Gray.copy(0.8f), fontSize = 13.sp)
             }
             Icon(Icons.Rounded.ChevronRight, null, tint = Color.White.copy(0.2f))
         }
