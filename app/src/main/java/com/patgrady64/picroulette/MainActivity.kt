@@ -10,7 +10,6 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.DocumentsContract
 import android.provider.MediaStore
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -203,7 +202,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalAnimationApi::class)
 @Composable
 fun PicRouletteApp(themeColor: Color) {
     val context = LocalContext.current
@@ -227,15 +226,11 @@ fun PicRouletteApp(themeColor: Color) {
     val currentIndex = remember { mutableIntStateOf(0) }
     var uiVisible by remember { mutableStateOf(false) }
 
-    // KEEP SCREEN ON LOGIC
+    // Keep Screen On
     val currentView = LocalView.current
     DisposableEffect(isPlaying) {
-        if (isPlaying) {
-            currentView.keepScreenOn = true
-        }
-        onDispose {
-            currentView.keepScreenOn = false
-        }
+        if (isPlaying) currentView.keepScreenOn = true
+        onDispose { currentView.keepScreenOn = false }
     }
 
     // Gestures
@@ -349,6 +344,8 @@ fun PicRouletteApp(themeColor: Color) {
             ) {
                 val currentUri = activeSessionList.getOrNull(currentIndex.intValue)
                 if (currentUri != null) {
+
+                    // --- PREPARE IMAGE METADATA ---
                     val currentFileName = remember(currentUri) {
                         var name = ""
                         try {
@@ -358,11 +355,23 @@ fun PicRouletteApp(themeColor: Color) {
                         } catch (e: Exception) {}
                         name.ifEmpty { currentUri.lastPathSegment ?: "img" }
                     }
-
                     val isHeartFilled = favoriteFiles.any { it.fileNameOnDisk == "PR_$currentFileName" || it.fileNameOnDisk == currentFileName }
 
-                    AsyncImage(model = currentUri, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y), contentScale = ContentScale.Fit)
+                    // --- SMOOTH IMAGE TRANSITION ---
+                    AnimatedContent(
+                        targetState = currentUri,
+                        transitionSpec = { fadeIn(animationSpec = tween(400)) with fadeOut(animationSpec = tween(400)) },
+                        label = "ImageTransition"
+                    ) { targetUri ->
+                        AsyncImage(
+                            model = targetUri,
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y),
+                            contentScale = ContentScale.Fit
+                        )
+                    }
 
+                    // --- OVERLAY UI ---
                     AnimatedVisibility(visible = uiVisible, enter = fadeIn() + slideInVertically(), exit = fadeOut() + slideOutVertically()) {
                         Box(modifier = Modifier.fillMaxSize()) {
                             Box(modifier = Modifier.fillMaxWidth().height(140.dp).align(Alignment.TopCenter).background(Brush.verticalGradient(listOf(Color.Black.copy(0.6f), Color.Transparent))))
@@ -370,21 +379,25 @@ fun PicRouletteApp(themeColor: Color) {
                             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 40.dp).align(Alignment.TopCenter), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                                 Button(onClick = { isPlaying = false }) { Text("Exit") }
 
+                                // --- HEART POP ANIMATION ---
                                 key(currentUri, isHeartFilled) {
+                                    val heartScale = remember { Animatable(1f) }
                                     IconButton(onClick = {
                                         triggerVibration(context)
                                         scope.launch {
+                                            // Pop effect
+                                            heartScale.animateTo(1.4f, spring(stiffness = Spring.StiffnessLow))
+                                            heartScale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy))
+
                                             if (isHeartFilled) {
                                                 val toDelete = favoriteFiles.find { it.fileNameOnDisk == "PR_$currentFileName" || it.fileNameOnDisk == currentFileName }
-                                                toDelete?.let {
-                                                    withContext(Dispatchers.IO) { context.contentResolver.delete(it.mediaUri, null, null) }
-                                                }
+                                                toDelete?.let { withContext(Dispatchers.IO) { context.contentResolver.delete(it.mediaUri, null, null) } }
                                             } else {
                                                 saveToFavoritesFolder(context, currentUri, currentFileName)
                                             }
                                             refreshFavs()
                                         }
-                                    }, modifier = Modifier.background(Color.Black.copy(0.5f), CircleShape).size(56.dp)) {
+                                    }, modifier = Modifier.background(Color.Black.copy(0.5f), CircleShape).size(56.dp).scale(heartScale.value)) {
                                         Icon(
                                             imageVector = if (isHeartFilled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
                                             null,
