@@ -33,6 +33,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
@@ -41,9 +42,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -90,19 +94,21 @@ fun getSavedFolders(context: Context): List<FolderConfig> {
     return list
 }
 
-fun triggerVibration(context: Context, long: Boolean = false) {
+fun triggerVibration(context: Context, style: VibrationStyle = VibrationStyle.TICK) {
     val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-        val effect = if (long) VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE)
-        else VibrationEffect.createOneShot(10, VibrationEffect.DEFAULT_AMPLITUDE)
+        val effect = when(style) {
+            VibrationStyle.TICK -> VibrationEffect.createOneShot(10, 80)
+            VibrationStyle.HEARTBEAT -> VibrationEffect.createWaveform(longArrayOf(0, 20, 100, 30), -1)
+            VibrationStyle.LONG -> VibrationEffect.createOneShot(60, VibrationEffect.DEFAULT_AMPLITUDE)
+        }
         vibrator.vibrate(effect)
-    } else {
-        @Suppress("DEPRECATION")
-        if (long) vibrator.vibrate(50) else vibrator.vibrate(10)
     }
 }
 
-// --- SCANNING LOGIC ---
+enum class VibrationStyle { TICK, HEARTBEAT, LONG }
+
+// --- SCANNING & SAVING ---
 fun queryImagesInFolder(context: Context, config: FolderConfig): List<Uri> {
     val allImages = mutableListOf<Uri>()
     val rootDocId = try { DocumentsContract.getTreeDocumentId(config.uri) } catch (e: Exception) { return emptyList() }
@@ -148,68 +154,72 @@ fun getFavoritesList(context: Context): List<FavoriteFile> {
     return list
 }
 
-suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: String): Uri? {
+suspend fun saveToFavoritesFolder(
+    context: Context,
+    sourceUri: Uri,
+    fileName: String,
+    scale: Float,
+    offset: Offset,
+    containerSize: IntSize
+): Uri? {
     return withContext(Dispatchers.IO) {
         try {
-            val bitmap = context.contentResolver.openInputStream(sourceUri)?.use { BitmapFactory.decodeStream(it) } ?: return@withContext null
+            val inputStream = context.contentResolver.openInputStream(sourceUri)
+            val fullBitmap = BitmapFactory.decodeStream(inputStream) ?: return@withContext null
+            val imgW = fullBitmap.width.toFloat()
+            val imgH = fullBitmap.height.toFloat()
+
+            val cropW = (imgW / scale).toInt().coerceIn(1, fullBitmap.width)
+            val cropH = (imgH / scale).toInt().coerceIn(1, fullBitmap.height)
+
+            val startX = ((imgW - cropW) / 2 - (offset.x * (imgW / containerSize.width))).toInt().coerceIn(0, (imgW - cropW).toInt())
+            val startY = ((imgH - cropH) / 2 - (offset.y * (imgH / containerSize.height))).toInt().coerceIn(0, (imgH - cropH).toInt())
+
+            val cropped = Bitmap.createBitmap(fullBitmap, startX, startY, cropW, cropH)
             val finalName = if (fileName.startsWith("PR_")) fileName else "PR_$fileName"
             val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "Zoom_$finalName")
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
                 put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/PicRoulette_Favorites")
             }
             val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            uri?.let { context.contentResolver.openOutputStream(it)?.use { out -> bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out) } }
+            uri?.let { context.contentResolver.openOutputStream(it)?.use { out -> cropped.compress(Bitmap.CompressFormat.JPEG, 95, out) } }
+
+            fullBitmap.recycle(); cropped.recycle()
             uri
         } catch (e: Exception) { null }
     }
 }
 
-// --- MAIN ACTIVITY ---
 class MainActivity : ComponentActivity() {
     private var isAppReady = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
-
         splashScreen.setKeepOnScreenCondition { !isAppReady }
-
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = WindowCompat.getInsetsController(window, window.decorView)
-        controller.hide(WindowInsetsCompat.Type.systemBars())
-        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-
+        controller?.hide(WindowInsetsCompat.Type.systemBars())
+        controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         lifecycleScope.launch { delay(800); isAppReady = true }
 
         setContent {
             val rouletteYellow = Color(0xFFFFD700)
-            val customColorScheme = darkColorScheme(
-                primary = rouletteYellow,
-                onPrimary = Color.Black,
-                secondary = rouletteYellow,
-                onSecondary = Color.Black,
-                surface = Color(0xFF0A0A0A),
-                background = Color(0xFF0A0A0A)
-            )
-
-            MaterialTheme(colorScheme = customColorScheme) {
-                Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) {
-                    PicRouletteApp(rouletteYellow)
-                }
+            MaterialTheme(colorScheme = darkColorScheme(primary = rouletteYellow, surface = Color(0xFF0A0A0A), background = Color(0xFF0A0A0A))) {
+                Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF0A0A0A)) { PicRouletteApp(rouletteYellow) }
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalAnimationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun PicRouletteApp(themeColor: Color) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // States
     var folderConfigs by remember { mutableStateOf(getSavedFolders(context)) }
     val pickedFolderImages = remember { mutableStateOf<List<Uri>>(emptyList()) }
     val scanningUris = remember { mutableStateListOf<Uri>() }
@@ -225,25 +235,24 @@ fun PicRouletteApp(themeColor: Color) {
     var uiVisibleAnim by remember { mutableStateOf(false) }
     val currentIndex = remember { mutableIntStateOf(0) }
     var uiVisible by remember { mutableStateOf(false) }
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
 
-    // Keep Screen On
     val currentView = LocalView.current
     DisposableEffect(isPlaying) {
         if (isPlaying) currentView.keepScreenOn = true
         onDispose { currentView.keepScreenOn = false }
     }
 
-    // Gestures
     val scale = remember { mutableFloatStateOf(1f) }
     val offset = remember { mutableStateOf(Offset.Zero) }
-    val transformState = rememberTransformableState { z, o, _ -> scale.floatValue *= z; offset.value += o }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 1f, targetValue = 1.12f,
-        animationSpec = infiniteRepeatable(animation = tween(1200, easing = FastOutSlowInEasing), repeatMode = RepeatMode.Reverse),
-        label = "pulseScale"
-    )
+    // UI LOCK: Transformations are ignored if menu is visible
+    val transformState = rememberTransformableState { z, o, _ ->
+        if (!uiVisible) {
+            scale.floatValue *= z
+            offset.value += o
+        }
+    }
 
     fun refreshFavs() {
         scope.launch(Dispatchers.IO) {
@@ -261,236 +270,109 @@ fun PicRouletteApp(themeColor: Color) {
                 try {
                     context.contentResolver.takePersistableUriPermission(config.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     val images = queryImagesInFolder(context, config)
-                    launch(Dispatchers.Main) {
-                        folderPhotoCounts[config.uri] = images.size
-                        scanningUris.remove(config.uri)
-                    }
+                    launch(Dispatchers.Main) { folderPhotoCounts[config.uri] = images.size; scanningUris.remove(config.uri) }
                     allImages.addAll(images)
-                } catch (e: Exception) {
-                    launch(Dispatchers.Main) { scanningUris.remove(config.uri) }
-                }
+                } catch (e: Exception) { launch(Dispatchers.Main) { scanningUris.remove(config.uri) } }
             }
         }
         pickedFolderImages.value = allImages
         isScanning.value = false
     }
 
-    LaunchedEffect(Unit) {
-        refreshFavs()
-        scanAllFolders()
-        delay(500); uiVisibleAnim = true
-    }
-
+    LaunchedEffect(Unit) { refreshFavs(); scanAllFolders(); delay(500); uiVisibleAnim = true }
     LaunchedEffect(currentIndex.intValue) { scale.floatValue = 1f; offset.value = Offset.Zero }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        containerColor = Color(0xFF0A0A0A)
-    ) { padding ->
+    Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
         if (!isPlaying) {
             Box(Modifier.padding(padding)) {
                 Column(modifier = Modifier.padding(top = 32.dp)) {
                     CenterAlignedTopAppBar(
                         colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = Color.Transparent, titleContentColor = Color.White),
-                        title = {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("PicRoulette", fontWeight = FontWeight.Black, fontSize = 32.sp)
-                                Text("Rediscover your library", style = MaterialTheme.typography.labelMedium, color = Color.Gray)
-                            }
-                        },
-                        actions = {
-                            IconButton(
-                                onClick = { triggerVibration(context); scope.launch { scanAllFolders(); refreshFavs() } },
-                                modifier = Modifier.padding(end = 16.dp).scale(if (isScanning.value) pulseScale else 1f)
-                            ) { Icon(Icons.Rounded.Refresh, null, tint = if (isScanning.value) themeColor else Color.White) }
-                        }
+                        title = { Column(horizontalAlignment = Alignment.CenterHorizontally) { Text("PicRoulette", fontWeight = FontWeight.Black, fontSize = 32.sp); Text("Rediscover your library", style = MaterialTheme.typography.labelMedium, color = Color.Gray) } },
+                        actions = { IconButton(onClick = { triggerVibration(context); scope.launch { scanAllFolders(); refreshFavs() } }) { Icon(Icons.Rounded.Refresh, null, tint = if (isScanning.value) themeColor else Color.White) } }
                     )
-                    AnimatedVisibility(visible = uiVisibleAnim, enter = fadeIn() + slideInVertically()) {
-                        Column(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
-                            Spacer(Modifier.height(24.dp))
-                            Box(modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(32.dp)).background(Brush.linearGradient(listOf(Color(0xFF7C4DFF), themeColor)))
-                                .clickable {
-                                    if (pickedFolderImages.value.isNotEmpty()) {
-                                        triggerVibration(context, true)
-                                        isFavoritesMode = false; uiVisible = false; activeSessionList.clear(); activeSessionList.addAll(pickedFolderImages.value.shuffled()); currentIndex.intValue = 0; isPlaying = true
-                                    }
-                                }
-                            ) {
-                                Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(240.dp).align(Alignment.CenterEnd).offset(x = 60.dp).graphicsLayer(alpha = 0.1f), tint = Color.White)
-                                Column(modifier = Modifier.padding(32.dp).align(Alignment.BottomStart)) {
-                                    Text("${pickedFolderImages.value.size} PHOTOS", color = Color.White.copy(0.7f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                    Text(if (isScanning.value) "Scanning..." else "Start Roulette", color = Color.White, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black)
-                                }
-                            }
-                            Spacer(Modifier.height(40.dp))
-                            DashboardActionCard("Library Folders", "${folderConfigs.size} folders linked", Icons.Rounded.FolderCopy, Color(0xFFBB86FC)) { triggerVibration(context); showSheet = true }
-                            Spacer(Modifier.height(16.dp))
-                            DashboardActionCard("Your Favorites", "${favoriteFiles.size} images saved", Icons.Rounded.Favorite, Color(0xFFFF4081)) {
-                                if (favoriteFiles.isNotEmpty()) {
-                                    triggerVibration(context); isFavoritesMode = true; uiVisible = false; activeSessionList.clear(); activeSessionList.addAll(favoriteFiles.map { it.mediaUri }.shuffled()); currentIndex.intValue = 0; isPlaying = true
-                                }
-                            }
+                    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+                        Spacer(Modifier.height(24.dp))
+                        Box(modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(32.dp)).background(Brush.linearGradient(listOf(Color(0xFF7C4DFF), themeColor)))
+                            .clickable { if (pickedFolderImages.value.isNotEmpty()) { triggerVibration(context, VibrationStyle.LONG); isFavoritesMode = false; activeSessionList.clear(); activeSessionList.addAll(pickedFolderImages.value.shuffled()); currentIndex.intValue = 0; isPlaying = true } }) {
+                            Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(240.dp).align(Alignment.CenterEnd).offset(x = 60.dp).graphicsLayer(alpha = 0.1f), tint = Color.White)
+                            Column(modifier = Modifier.padding(32.dp).align(Alignment.BottomStart)) { Text("${pickedFolderImages.value.size} PHOTOS", color = Color.White.copy(0.7f), fontWeight = FontWeight.Bold, fontSize = 12.sp); Text(if (isScanning.value) "Scanning..." else "Start Roulette", color = Color.White, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black) }
                         }
+                        Spacer(Modifier.height(40.dp))
+                        DashboardActionCard("Library Folders", "${folderConfigs.size} folders linked", Icons.Rounded.FolderCopy, Color(0xFFBB86FC)) { triggerVibration(context); showSheet = true }
+                        Spacer(Modifier.height(16.dp))
+                        DashboardActionCard("Your Favorites", "${favoriteFiles.size} images saved", Icons.Rounded.Favorite, Color(0xFFFF4081)) { if (favoriteFiles.isNotEmpty()) { triggerVibration(context, VibrationStyle.LONG); isFavoritesMode = true; activeSessionList.clear(); activeSessionList.addAll(favoriteFiles.map { it.mediaUri }.shuffled()); currentIndex.intValue = 0; isPlaying = true } }
                     }
                 }
             }
         } else {
-            // VIEWER
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black).transformable(state = transformState)
-                .combinedClickable(
-                    onClick = { if (activeSessionList.isNotEmpty()) { if (currentIndex.intValue >= activeSessionList.size - 1) { activeSessionList.shuffle(); currentIndex.intValue = 0 } else currentIndex.intValue += 1 } },
-                    onLongClick = { triggerVibration(context); uiVisible = !uiVisible }
-                )
-            ) {
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black).onGloballyPositioned { containerSize = it.size }.transformable(state = transformState)
+                .combinedClickable(onClick = { if (activeSessionList.isNotEmpty()) { triggerVibration(context, VibrationStyle.TICK); if (currentIndex.intValue >= activeSessionList.size - 1) { activeSessionList.shuffle(); currentIndex.intValue = 0 } else currentIndex.intValue += 1 } }, onLongClick = { triggerVibration(context, VibrationStyle.LONG); uiVisible = !uiVisible })) {
                 val currentUri = activeSessionList.getOrNull(currentIndex.intValue)
                 if (currentUri != null) {
-
-                    // --- PREPARE IMAGE METADATA ---
                     val currentFileName = remember(currentUri) {
                         var name = ""
-                        try {
-                            context.contentResolver.query(currentUri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)?.use {
-                                if (it.moveToFirst()) name = it.getString(0)
-                            }
-                        } catch (e: Exception) {}
+                        context.contentResolver.query(currentUri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) name = it.getString(0) }
                         name.ifEmpty { currentUri.lastPathSegment ?: "img" }
                     }
-                    val isHeartFilled = favoriteFiles.any { it.fileNameOnDisk == "PR_$currentFileName" || it.fileNameOnDisk == currentFileName }
+                    val isHeartFilled = favoriteFiles.any { it.fileNameOnDisk == "PR_$currentFileName" || it.fileNameOnDisk == currentFileName || it.fileNameOnDisk == "Zoom_$currentFileName" }
 
-                    // --- SMOOTH IMAGE TRANSITION ---
-                    AnimatedContent(
-                        targetState = currentUri,
-                        transitionSpec = { fadeIn(animationSpec = tween(400)) with fadeOut(animationSpec = tween(400)) },
-                        label = "ImageTransition"
-                    ) { targetUri ->
-                        AsyncImage(
-                            model = targetUri,
-                            contentDescription = null,
-                            modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y),
-                            contentScale = ContentScale.Fit
-                        )
-                    }
+                    AsyncImage(model = currentUri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f))
+                    AsyncImage(model = currentUri, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y), contentScale = ContentScale.Fit)
 
-                    // --- OVERLAY UI ---
-                    AnimatedVisibility(visible = uiVisible, enter = fadeIn() + slideInVertically(), exit = fadeOut() + slideOutVertically()) {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            Box(modifier = Modifier.fillMaxWidth().height(140.dp).align(Alignment.TopCenter).background(Brush.verticalGradient(listOf(Color.Black.copy(0.6f), Color.Transparent))))
-
-                            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 40.dp).align(Alignment.TopCenter), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                                Button(onClick = { isPlaying = false }) { Text("Exit") }
-
-                                // --- HEART POP ANIMATION ---
-                                key(currentUri, isHeartFilled) {
-                                    val heartScale = remember { Animatable(1f) }
-                                    IconButton(onClick = {
-                                        triggerVibration(context)
-                                        scope.launch {
-                                            // Pop effect
-                                            heartScale.animateTo(1.4f, spring(stiffness = Spring.StiffnessLow))
-                                            heartScale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy))
-
-                                            if (isHeartFilled) {
-                                                val toDelete = favoriteFiles.find { it.fileNameOnDisk == "PR_$currentFileName" || it.fileNameOnDisk == currentFileName }
-                                                toDelete?.let { withContext(Dispatchers.IO) { context.contentResolver.delete(it.mediaUri, null, null) } }
-                                            } else {
-                                                saveToFavoritesFolder(context, currentUri, currentFileName)
-                                            }
-                                            refreshFavs()
-                                        }
-                                    }, modifier = Modifier.background(Color.Black.copy(0.5f), CircleShape).size(56.dp).scale(heartScale.value)) {
-                                        Icon(
-                                            imageVector = if (isHeartFilled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                                            null,
-                                            tint = Color.Red,
-                                            modifier = Modifier.size(36.dp)
-                                        )
-                                    }
-                                }
-
-                                Button(onClick = { if (currentIndex.intValue > 0) currentIndex.intValue -= 1 }) { Text("Back") }
-                            }
-
-                            if (!isFavoritesMode) {
-                                IconButton(
-                                    onClick = { triggerVibration(context, true); showDeleteDialog = true },
-                                    modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp).size(64.dp).background(Color.Black.copy(0.3f), CircleShape)
-                                ) {
-                                    Box(Modifier.fillMaxSize().background(Color.Red.copy(0.15f), CircleShape), contentAlignment = Alignment.Center) {
-                                        Icon(Icons.Rounded.DeleteOutline, "Delete", tint = Color.Red, modifier = Modifier.size(32.dp))
-                                    }
-                                }
-                            }
+                    AnimatedVisibility(visible = scale.floatValue > 1.1f, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp), enter = fadeIn(), exit = fadeOut()) {
+                        Surface(color = Color.Black.copy(0.6f), shape = CircleShape) {
+                            val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            context.contentResolver.openInputStream(currentUri)?.use { BitmapFactory.decodeStream(it, null, opt) }
+                            val resText = "${(opt.outWidth / scale.floatValue).toInt()}x${(opt.outHeight / scale.floatValue).toInt()} px"
+                            Text(resText, color = Color.White, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
 
-                    if (showDeleteDialog) {
-                        AlertDialog(
-                            onDismissRequest = { showDeleteDialog = false },
-                            title = { Text("Delete Photo?") },
-                            text = { Text("This image will be permanently removed from your device.") },
-                            confirmButton = {
-                                TextButton(onClick = {
-                                    showDeleteDialog = false
-                                    scope.launch {
-                                        val photoToDelete = currentUri
-                                        activeSessionList.remove(photoToDelete)
-                                        if (activeSessionList.isEmpty()) isPlaying = false
-                                        withContext(Dispatchers.IO) {
-                                            try { context.contentResolver.delete(photoToDelete, null, null) } catch (e: Exception) {}
+                    AnimatedVisibility(visible = uiVisible, enter = fadeIn() + slideInVertically(), exit = fadeOut() + slideOutVertically()) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 40.dp).align(Alignment.TopCenter), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                                Button(onClick = { isPlaying = false }) { Text("Exit") }
+                                key(currentUri, isHeartFilled) {
+                                    val heartScale = remember { Animatable(1f) }
+                                    IconButton(onClick = {
+                                        triggerVibration(context, VibrationStyle.HEARTBEAT)
+                                        scope.launch {
+                                            heartScale.animateTo(1.4f, spring())
+                                            heartScale.animateTo(1f, spring())
+                                            if (!isHeartFilled) {
+                                                val savedUri = saveToFavoritesFolder(context, currentUri, currentFileName, scale.floatValue, offset.value, containerSize)
+                                                if (savedUri != null) snackbarHostState.showSnackbar("Saved to Favorites", withDismissAction = true)
+                                            }
+                                            refreshFavs()
                                         }
-                                        scanAllFolders()
-                                    }
-                                }) { Text("Delete", color = Color.Red) }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+                                    }, modifier = Modifier.background(Color.Black.copy(0.5f), CircleShape).size(56.dp).scale(heartScale.value)) { Icon(if (isHeartFilled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, null, tint = Color.Red, modifier = Modifier.size(36.dp)) }
+                                }
+                                Button(onClick = { if (currentIndex.intValue > 0) currentIndex.intValue -= 1 }) { Text("Back") }
                             }
-                        )
+                            if (!isFavoritesMode) {
+                                IconButton(onClick = { triggerVibration(context, VibrationStyle.LONG); showDeleteDialog = true }, modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp).size(64.dp).background(Color.Red.copy(0.2f), CircleShape)) { Icon(Icons.Rounded.DeleteOutline, "Delete", tint = Color.Red, modifier = Modifier.size(32.dp)) }
+                            }
+                        }
+                    }
+                    if (showDeleteDialog) {
+                        AlertDialog(onDismissRequest = { showDeleteDialog = false }, title = { Text("Delete Photo?") }, text = { Text("Permanently remove this image?") }, confirmButton = { TextButton(onClick = { showDeleteDialog = false; scope.launch { activeSessionList.remove(currentUri); if (activeSessionList.isEmpty()) isPlaying = false; withContext(Dispatchers.IO) { try { context.contentResolver.delete(currentUri, null, null) } catch (e: Exception) {} }; scanAllFolders() } }) { Text("Delete", color = Color.Red) } }, dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") } })
                     }
                 }
             }
         }
     }
-
     if (showSheet) {
         ModalBottomSheet(onDismissRequest = { showSheet = false }, containerColor = Color(0xFF141414)) {
-            val launcher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-                uri?.let { folderConfigs = folderConfigs + FolderConfig(it); saveFolders(context, folderConfigs); scope.launch { scanAllFolders() } }
-            }
-            Column(modifier = Modifier.fillMaxWidth().padding(bottom = 48.dp).padding(horizontal = 24.dp)) {
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                    Text("Manage Folders", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White)
-                    IconButton(onClick = { launcher.launch(null) }, modifier = Modifier.background(themeColor, CircleShape)) { Icon(Icons.Rounded.Add, null, tint = Color.Black) }
-                }
+            val fLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let { folderConfigs = folderConfigs + FolderConfig(it); saveFolders(context, folderConfigs); scope.launch { scanAllFolders() } } }
+            Column(modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 48.dp)) {
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) { Text("Manage Folders", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White); IconButton(onClick = { fLauncher.launch(null) }, modifier = Modifier.background(themeColor, CircleShape)) { Icon(Icons.Rounded.Add, null, tint = Color.Black) } }
                 Spacer(Modifier.height(24.dp))
                 LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
                     items(folderConfigs) { config ->
                         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp).clip(RoundedCornerShape(20.dp)).background(Color.White.copy(0.04f)).padding(16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Rounded.Folder, null, tint = themeColor)
-                                Spacer(Modifier.width(12.dp))
-                                Text(config.uri.path?.split("/")?.lastOrNull() ?: "Folder", modifier = Modifier.weight(1f), color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1)
-
-                                if (scanningUris.contains(config.uri)) {
-                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = themeColor)
-                                } else {
-                                    Text("${folderPhotoCounts[config.uri] ?: 0}", color = themeColor, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                }
-
-                                IconButton(onClick = { folderConfigs = folderConfigs.filter { it.uri != config.uri }; saveFolders(context, folderConfigs); scope.launch { scanAllFolders() } }) { Icon(Icons.Rounded.DeleteOutline, null, tint = Color.Red.copy(0.7f)) }
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-                                Text("Include subfolders", color = Color.Gray, fontSize = 14.sp, modifier = Modifier.weight(1f))
-                                Switch(
-                                    checked = config.includeSubfolders,
-                                    onCheckedChange = { isChecked ->
-                                        folderConfigs = folderConfigs.map { if (it.uri == config.uri) it.copy(includeSubfolders = isChecked) else it }
-                                        saveFolders(context, folderConfigs)
-                                        scope.launch { scanAllFolders() }
-                                    },
-                                    colors = SwitchDefaults.colors(checkedThumbColor = themeColor)
-                                )
-                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Rounded.Folder, null, tint = themeColor); Spacer(Modifier.width(12.dp)); Text(config.uri.path?.split("/")?.lastOrNull() ?: "Folder", modifier = Modifier.weight(1f), color = Color.White, fontWeight = FontWeight.Bold); IconButton(onClick = { folderConfigs = folderConfigs.filter { it.uri != config.uri }; saveFolders(context, folderConfigs); scope.launch { scanAllFolders() } }) { Icon(Icons.Rounded.DeleteOutline, null, tint = Color.Red.copy(0.7f)) } }
+                            Row(verticalAlignment = Alignment.CenterVertically) { Text("Include subfolders", color = Color.Gray, fontSize = 14.sp, modifier = Modifier.weight(1f)); Switch(checked = config.includeSubfolders, onCheckedChange = { isChecked -> folderConfigs = folderConfigs.map { if (it.uri == config.uri) it.copy(includeSubfolders = isChecked) else it }; saveFolders(context, folderConfigs); scope.launch { scanAllFolders() } }, colors = SwitchDefaults.colors(checkedThumbColor = themeColor)) }
                         }
                     }
                 }
@@ -505,10 +387,7 @@ fun DashboardActionCard(title: String, subtitle: String, icon: ImageVector, colo
         Row(Modifier.padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(54.dp).clip(RoundedCornerShape(16.dp)).background(color.copy(0.12f)), Alignment.Center) { Icon(icon, null, tint = color, modifier = Modifier.size(28.dp)) }
             Spacer(Modifier.width(16.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                Text(subtitle, color = Color.Gray.copy(0.8f), fontSize = 13.sp)
-            }
+            Column(Modifier.weight(1f)) { Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp); Text(subtitle, color = Color.Gray.copy(0.8f), fontSize = 13.sp) }
             Icon(Icons.Rounded.ChevronRight, null, tint = Color.White.copy(0.2f))
         }
     }
