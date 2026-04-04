@@ -234,6 +234,7 @@ fun PicRouletteApp(themeColor: Color) {
     var showSheet by remember { mutableStateOf(false) }
     var uiVisibleAnim by remember { mutableStateOf(false) }
     val currentIndex = remember { mutableIntStateOf(0) }
+
     var uiVisible by remember { mutableStateOf(false) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
 
@@ -246,11 +247,21 @@ fun PicRouletteApp(themeColor: Color) {
     val scale = remember { mutableFloatStateOf(1f) }
     val offset = remember { mutableStateOf(Offset.Zero) }
 
-    // UI LOCK: Transformations are ignored if menu is visible
+    var isTransforming by remember { mutableStateOf(false) }
+
     val transformState = rememberTransformableState { z, o, _ ->
         if (!uiVisible) {
+            isTransforming = true
             scale.floatValue *= z
             offset.value += o
+        }
+    }
+
+    // Reset transforming flag after a short delay
+    LaunchedEffect(isTransforming) {
+        if (isTransforming) {
+            delay(1000)
+            isTransforming = false
         }
     }
 
@@ -280,7 +291,14 @@ fun PicRouletteApp(themeColor: Color) {
     }
 
     LaunchedEffect(Unit) { refreshFavs(); scanAllFolders(); delay(500); uiVisibleAnim = true }
-    LaunchedEffect(currentIndex.intValue) { scale.floatValue = 1f; offset.value = Offset.Zero }
+
+    // Reset state whenever image changes - FIXED: isTransforming also resets now
+    LaunchedEffect(currentIndex.intValue) {
+        scale.floatValue = 1f
+        offset.value = Offset.Zero
+        uiVisible = false
+        isTransforming = false
+    }
 
     Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
         if (!isPlaying) {
@@ -306,8 +324,29 @@ fun PicRouletteApp(themeColor: Color) {
                 }
             }
         } else {
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black).onGloballyPositioned { containerSize = it.size }.transformable(state = transformState)
-                .combinedClickable(onClick = { if (activeSessionList.isNotEmpty()) { triggerVibration(context, VibrationStyle.TICK); if (currentIndex.intValue >= activeSessionList.size - 1) { activeSessionList.shuffle(); currentIndex.intValue = 0 } else currentIndex.intValue += 1 } }, onLongClick = { triggerVibration(context, VibrationStyle.LONG); uiVisible = !uiVisible })) {
+            Box(modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .onGloballyPositioned { containerSize = it.size }
+                .transformable(state = transformState)
+                .combinedClickable(
+                    onClick = {
+                        if (!uiVisible && activeSessionList.isNotEmpty()) {
+                            triggerVibration(context, VibrationStyle.TICK)
+                            if (currentIndex.intValue >= activeSessionList.size - 1) {
+                                activeSessionList.shuffle()
+                                currentIndex.intValue = 0
+                            } else currentIndex.intValue += 1
+                        } else if (uiVisible) {
+                            uiVisible = false
+                        }
+                    },
+                    onLongClick = {
+                        triggerVibration(context, VibrationStyle.LONG)
+                        uiVisible = true
+                    }
+                )
+            ) {
                 val currentUri = activeSessionList.getOrNull(currentIndex.intValue)
                 if (currentUri != null) {
                     val currentFileName = remember(currentUri) {
@@ -320,7 +359,13 @@ fun PicRouletteApp(themeColor: Color) {
                     AsyncImage(model = currentUri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f))
                     AsyncImage(model = currentUri, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y), contentScale = ContentScale.Fit)
 
-                    AnimatedVisibility(visible = scale.floatValue > 1.1f, modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp), enter = fadeIn(), exit = fadeOut()) {
+                    // Resolution Badge
+                    AnimatedVisibility(
+                        visible = (scale.floatValue > 1.05f && isTransforming),
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp),
+                        enter = fadeIn(),
+                        exit = fadeOut()
+                    ) {
                         Surface(color = Color.Black.copy(0.6f), shape = CircleShape) {
                             val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                             context.contentResolver.openInputStream(currentUri)?.use { BitmapFactory.decodeStream(it, null, opt) }
