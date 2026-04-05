@@ -257,7 +257,6 @@ fun PicRouletteApp(themeColor: Color) {
         }
     }
 
-    // Reset transforming flag after a short delay
     LaunchedEffect(isTransforming) {
         if (isTransforming) {
             delay(1000)
@@ -292,7 +291,6 @@ fun PicRouletteApp(themeColor: Color) {
 
     LaunchedEffect(Unit) { refreshFavs(); scanAllFolders(); delay(500); uiVisibleAnim = true }
 
-    // Reset state whenever image changes - FIXED: isTransforming also resets now
     LaunchedEffect(currentIndex.intValue) {
         scale.floatValue = 1f
         offset.value = Offset.Zero
@@ -343,7 +341,8 @@ fun PicRouletteApp(themeColor: Color) {
                     },
                     onLongClick = {
                         triggerVibration(context, VibrationStyle.LONG)
-                        uiVisible = true
+                        // FIXED: Long pressing now toggles visibility
+                        uiVisible = !uiVisible
                     }
                 )
             ) {
@@ -359,7 +358,6 @@ fun PicRouletteApp(themeColor: Color) {
                     AsyncImage(model = currentUri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f))
                     AsyncImage(model = currentUri, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y), contentScale = ContentScale.Fit)
 
-                    // Resolution Badge
                     AnimatedVisibility(
                         visible = (scale.floatValue > 1.05f && isTransforming),
                         modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp),
