@@ -18,6 +18,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -220,6 +221,7 @@ fun PicRouletteApp(themeColor: Color) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
+    // --- State Management ---
     var folderConfigs by remember { mutableStateOf(getSavedFolders(context)) }
     val pickedFolderImages = remember { mutableStateOf<List<Uri>>(emptyList()) }
     val scanningUris = remember { mutableStateListOf<Uri>() }
@@ -232,11 +234,32 @@ fun PicRouletteApp(themeColor: Color) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     val isScanning = remember { mutableStateOf(false) }
     var showSheet by remember { mutableStateOf(false) }
-    var uiVisibleAnim by remember { mutableStateOf(false) }
     val currentIndex = remember { mutableIntStateOf(0) }
-
     var uiVisible by remember { mutableStateOf(false) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // --- High-Performance Animations ---
+    val infiniteTransition = rememberInfiniteTransition(label = "shimmer")
+
+    val scannerGlow by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "glow"
+    )
+
+    val sweepOffset by infiniteTransition.animateFloat(
+        initialValue = -1200f,
+        targetValue = 2000f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "sweep"
+    )
 
     val currentView = LocalView.current
     DisposableEffect(isPlaying) {
@@ -246,7 +269,6 @@ fun PicRouletteApp(themeColor: Color) {
 
     val scale = remember { mutableFloatStateOf(1f) }
     val offset = remember { mutableStateOf(Offset.Zero) }
-
     var isTransforming by remember { mutableStateOf(false) }
 
     val transformState = rememberTransformableState { z, o, _ ->
@@ -289,7 +311,7 @@ fun PicRouletteApp(themeColor: Color) {
         isScanning.value = false
     }
 
-    LaunchedEffect(Unit) { refreshFavs(); scanAllFolders(); delay(500); uiVisibleAnim = true }
+    LaunchedEffect(Unit) { refreshFavs(); scanAllFolders() }
 
     LaunchedEffect(currentIndex.intValue) {
         scale.floatValue = 1f
@@ -309,11 +331,68 @@ fun PicRouletteApp(themeColor: Color) {
                     )
                     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
                         Spacer(Modifier.height(24.dp))
-                        Box(modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(32.dp)).background(Brush.linearGradient(listOf(Color(0xFF7C4DFF), themeColor)))
+
+                        // --- CINEMATIC "POWER-UP" START ROULETTE BOX ---
+                        Box(modifier = Modifier
+                            .fillMaxWidth()
+                            .height(220.dp)
+                            .clip(RoundedCornerShape(32.dp))
+                            // Base Layer: Very dark deep purple/black
+                            .background(Color(0xFF050112))
                             .clickable { if (pickedFolderImages.value.isNotEmpty()) { triggerVibration(context, VibrationStyle.LONG); isFavoritesMode = false; activeSessionList.clear(); activeSessionList.addAll(pickedFolderImages.value.shuffled()); currentIndex.intValue = 0; isPlaying = true } }) {
-                            Icon(Icons.Rounded.PlayArrow, null, modifier = Modifier.size(240.dp).align(Alignment.CenterEnd).offset(x = 60.dp).graphicsLayer(alpha = 0.1f), tint = Color.White)
-                            Column(modifier = Modifier.padding(32.dp).align(Alignment.BottomStart)) { Text("${pickedFolderImages.value.size} PHOTOS", color = Color.White.copy(0.7f), fontWeight = FontWeight.Bold, fontSize = 12.sp); Text(if (isScanning.value) "Scanning..." else "Start Roulette", color = Color.White, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black) }
+
+                            if (isScanning.value) {
+                                // High-Contrast Charging Sweep Layer
+                                Box(modifier = Modifier.fillMaxSize().background(
+                                    Brush.linearGradient(
+                                        colors = listOf(
+                                            Color.Transparent,
+                                            Color(0xFF7C4DFF).copy(alpha = 0.8f), // Hot Purple
+                                            themeColor, // Electric Yellow
+                                            Color.Transparent
+                                        ),
+                                        start = Offset(sweepOffset, 0f),
+                                        end = Offset(sweepOffset + 800f, 800f)
+                                    )
+                                ))
+                            } else {
+                                // Static "Fully Charged" State
+                                Box(modifier = Modifier.fillMaxSize().background(
+                                    Brush.linearGradient(listOf(Color(0xFF7C4DFF), themeColor))
+                                ))
+                            }
+
+                            // Pulsing Play Icon
+                            Icon(Icons.Rounded.PlayArrow, null,
+                                modifier = Modifier
+                                    .size(240.dp)
+                                    .align(Alignment.CenterEnd)
+                                    .offset(x = 60.dp)
+                                    .graphicsLayer {
+                                        alpha = if (isScanning.value) scannerGlow * 0.3f else 0.1f
+                                        val s = if (isScanning.value) 1f + (scannerGlow * 0.05f) else 1f
+                                        scaleX = s; scaleY = s
+                                    },
+                                tint = Color.White)
+
+                            Column(modifier = Modifier.padding(32.dp).align(Alignment.BottomStart)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (isScanning.value) {
+                                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 3.dp)
+                                        Spacer(Modifier.width(12.dp))
+                                    }
+                                    Text(
+                                        text = if (isScanning.value) "INITIALIZING SCAN..." else "${pickedFolderImages.value.size} PHOTOS",
+                                        color = if (isScanning.value) Color.White else Color.White.copy(0.7f),
+                                        fontWeight = FontWeight.ExtraBold,
+                                        fontSize = 12.sp,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                Text("Start Roulette", color = Color.White, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black)
+                            }
                         }
+
                         Spacer(Modifier.height(40.dp))
                         DashboardActionCard("Library Folders", "${folderConfigs.size} folders linked", Icons.Rounded.FolderCopy, Color(0xFFBB86FC)) { triggerVibration(context); showSheet = true }
                         Spacer(Modifier.height(16.dp))
@@ -322,6 +401,7 @@ fun PicRouletteApp(themeColor: Color) {
                 }
             }
         } else {
+            // --- IMAGE VIEWER MODE ---
             Box(modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
@@ -341,7 +421,6 @@ fun PicRouletteApp(themeColor: Color) {
                     },
                     onLongClick = {
                         triggerVibration(context, VibrationStyle.LONG)
-                        // FIXED: Long pressing now toggles visibility
                         uiVisible = !uiVisible
                     }
                 )
@@ -358,6 +437,7 @@ fun PicRouletteApp(themeColor: Color) {
                     AsyncImage(model = currentUri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f))
                     AsyncImage(model = currentUri, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y), contentScale = ContentScale.Fit)
 
+                    // Resolution Badge
                     AnimatedVisibility(
                         visible = (scale.floatValue > 1.05f && isTransforming),
                         modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp),
@@ -372,6 +452,7 @@ fun PicRouletteApp(themeColor: Color) {
                         }
                     }
 
+                    // Floating Menu UI
                     AnimatedVisibility(visible = uiVisible, enter = fadeIn() + slideInVertically(), exit = fadeOut() + slideOutVertically()) {
                         Box(modifier = Modifier.fillMaxSize()) {
                             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 40.dp).align(Alignment.TopCenter), Arrangement.SpaceBetween, Alignment.CenterVertically) {
@@ -405,6 +486,8 @@ fun PicRouletteApp(themeColor: Color) {
             }
         }
     }
+
+    // Manage Folders Bottom Sheet
     if (showSheet) {
         ModalBottomSheet(onDismissRequest = { showSheet = false }, containerColor = Color(0xFF141414)) {
             val fLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> uri?.let { folderConfigs = folderConfigs + FolderConfig(it); saveFolders(context, folderConfigs); scope.launch { scanAllFolders() } } }
