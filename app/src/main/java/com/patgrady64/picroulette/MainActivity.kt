@@ -18,7 +18,6 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -162,7 +161,6 @@ suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: St
             val cropW = (imgW / scale).toInt().coerceIn(1, fullBitmap.width)
             val cropH = (imgH / scale).toInt().coerceIn(1, fullBitmap.height)
             val startX = ((imgW - cropW) / 2 - (offset.x * (imgW / containerSize.width))).toInt().coerceIn(0, (imgW - cropW).toInt())
-            // FIX: Changed .collegiateIn to .coerceIn
             val startY = ((imgH - cropH) / 2 - (offset.y * (imgH / containerSize.height))).toInt().coerceIn(0, (imgH - cropH).toInt())
             val cropped = Bitmap.createBitmap(fullBitmap, startX, startY, cropW, cropH)
             val finalName = if (fileName.startsWith("PR_")) fileName else "PR_$fileName"
@@ -244,12 +242,29 @@ fun PicRouletteApp(themeColor: Color) {
 
     val scale = remember { mutableFloatStateOf(1f) }
     val offset = remember { mutableStateOf(Offset.Zero) }
-    var isTransforming by remember { mutableStateOf(false) }
-    val transformState = rememberTransformableState { z, o, _ ->
-        if (!uiVisible) { isTransforming = true; scale.floatValue *= z; offset.value += o }
+
+    // REFINED RESOLUTION FADE LOGIC
+    var showResolution by remember { mutableStateOf(false) }
+    var lastTransformTime by remember { mutableLongStateOf(0L) }
+
+    // This effect now tracks 'lastTransformTime'.
+    // Every single time the user moves/zooms, the timestamp updates,
+    // which cancels the previous delay and starts a fresh 1.5s countdown.
+    LaunchedEffect(lastTransformTime) {
+        if (lastTransformTime > 0) {
+            showResolution = true
+            delay(1500)
+            showResolution = false
+        }
     }
 
-    LaunchedEffect(isTransforming) { if (isTransforming) { delay(1000); isTransforming = false } }
+    val transformState = rememberTransformableState { z, o, _ ->
+        if (!uiVisible) {
+            lastTransformTime = System.currentTimeMillis() // Update timestamp to reset the timer
+            scale.floatValue *= z
+            offset.value += o
+        }
+    }
 
     fun refreshFavs() {
         scope.launch(Dispatchers.IO) {
@@ -374,7 +389,8 @@ fun PicRouletteApp(themeColor: Color) {
                     AsyncImage(model = currentUri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f))
                     AsyncImage(model = currentUri, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y), contentScale = ContentScale.Fit)
 
-                    AnimatedVisibility(visible = (scale.floatValue > 1.05f && isTransforming), modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp), enter = fadeIn(), exit = fadeOut()) {
+                    // RESOLUTION PILL: showResolution is now managed by the lastTransformTime countdown
+                    AnimatedVisibility(visible = (scale.floatValue > 1.05f && showResolution), modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp), enter = fadeIn(), exit = fadeOut()) {
                         Surface(color = Color.Black.copy(0.6f), shape = CircleShape) {
                             val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                             context.contentResolver.openInputStream(currentUri)?.use { BitmapFactory.decodeStream(it, null, opt) }
