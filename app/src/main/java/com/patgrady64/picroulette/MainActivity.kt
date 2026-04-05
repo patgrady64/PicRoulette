@@ -64,11 +64,10 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-// --- DATA MODELS ---
+// --- DATA MODELS & STORAGE ---
 data class FavoriteFile(val fileNameOnDisk: String, val mediaUri: Uri)
 data class FolderConfig(val uri: Uri, val includeSubfolders: Boolean = true)
 
-// --- UTILS ---
 fun saveFolders(context: Context, folders: List<FolderConfig>) {
     val prefs = context.getSharedPreferences("PicRoulettePrefs", Context.MODE_PRIVATE)
     val array = JSONArray()
@@ -163,6 +162,7 @@ suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: St
             val cropW = (imgW / scale).toInt().coerceIn(1, fullBitmap.width)
             val cropH = (imgH / scale).toInt().coerceIn(1, fullBitmap.height)
             val startX = ((imgW - cropW) / 2 - (offset.x * (imgW / containerSize.width))).toInt().coerceIn(0, (imgW - cropW).toInt())
+            // FIX: Changed .collegiateIn to .coerceIn
             val startY = ((imgH - cropH) / 2 - (offset.y * (imgH / containerSize.height))).toInt().coerceIn(0, (imgH - cropH).toInt())
             val cropped = Bitmap.createBitmap(fullBitmap, startX, startY, cropW, cropH)
             val finalName = if (fileName.startsWith("PR_")) fileName else "PR_$fileName"
@@ -206,7 +206,7 @@ fun PicRouletteApp(themeColor: Color) {
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // --- State Management ---
+    // --- State ---
     var folderConfigs by remember { mutableStateOf(getSavedFolders(context)) }
     val pickedFolderImages = remember { mutableStateOf<List<Uri>>(emptyList()) }
     val scanningUris = remember { mutableStateListOf<Uri>() }
@@ -221,8 +221,7 @@ fun PicRouletteApp(themeColor: Color) {
     var uiVisible by remember { mutableStateOf(false) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
 
-    // --- Real-time Progress Animation ---
-    // Correct Left-to-Right Progress calculation
+    // --- ANIMATION LOGIC ---
     val scanProgress by animateFloatAsState(
         targetValue = if (!isScanning.value) 1f
         else if (folderConfigs.isEmpty()) 0f
@@ -234,7 +233,7 @@ fun PicRouletteApp(themeColor: Color) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseAlpha by infiniteTransition.animateFloat(
         initialValue = 0.4f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1000, easing = LinearEasing), RepeatMode.Reverse), label = "pulse"
+        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), RepeatMode.Reverse), label = "pulse"
     )
 
     val currentView = LocalView.current
@@ -266,8 +265,7 @@ fun PicRouletteApp(themeColor: Color) {
         val allImages = mutableListOf<Uri>()
         withContext(Dispatchers.IO) {
             folderConfigs.forEach { config ->
-                // Small delay to ensure the animation is visible to the human eye
-                delay(150)
+                delay(200)
                 try {
                     context.contentResolver.takePersistableUriPermission(config.uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     val images = queryImagesInFolder(context, config)
@@ -295,37 +293,34 @@ fun PicRouletteApp(themeColor: Color) {
                     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
                         Spacer(Modifier.height(24.dp))
 
-                        // --- CORRECTED PROGRESS-DRIVEN "POWER-UP" BOX ---
                         Box(modifier = Modifier
                             .fillMaxWidth()
                             .height(220.dp)
                             .clip(RoundedCornerShape(32.dp))
-                            .background(Color(0xFF050112)) // Dark base
+                            .background(Color(0xFF050112))
+                            .onGloballyPositioned { containerSize = it.size }
                             .clickable { if (pickedFolderImages.value.isNotEmpty()) { triggerVibration(context, VibrationStyle.LONG); isFavoritesMode = false; activeSessionList.clear(); activeSessionList.addAll(pickedFolderImages.value.shuffled()); currentIndex.intValue = 0; isPlaying = true } }) {
 
-                            // Background Fill (Grows Left -> Right)
                             Box(modifier = Modifier
                                 .fillMaxSize()
                                 .background(
-                                    Brush.linearGradient(
-                                        colors = if (isScanning.value) {
-                                            listOf(Color(0xFF7C4DFF), themeColor, Color.Transparent)
-                                        } else {
-                                            listOf(Color(0xFF7C4DFF), themeColor)
-                                        },
-                                        start = Offset(0f, 0f),
-                                        // Expand the end point based on progress
-                                        end = Offset(if (isScanning.value) (scanProgress * 2000f) else Float.POSITIVE_INFINITY, 1000f)
+                                    Brush.horizontalGradient(
+                                        0.0f to Color(0xFF7C4DFF),
+                                        scanProgress to themeColor,
+                                        scanProgress to Color.Transparent
                                     )
                                 )
                             )
 
-                            // Bright Leading Edge "Blade"
-                            if (isScanning.value) {
+                            if (isScanning.value && scanProgress > 0f && scanProgress < 1f) {
                                 Box(modifier = Modifier
-                                    .fillMaxWidth(scanProgress.coerceIn(0.01f, 1f))
                                     .fillMaxHeight()
-                                    .background(Brush.horizontalGradient(listOf(Color.Transparent, Color.White.copy(0.4f))))
+                                    .width(6.dp)
+                                    .graphicsLayer {
+                                        translationX = (scanProgress * containerSize.width.toFloat()) - 3.dp.toPx()
+                                    }
+                                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.White, Color.Transparent)))
+                                    .blur(2.dp)
                                 )
                             }
 
@@ -361,7 +356,6 @@ fun PicRouletteApp(themeColor: Color) {
                 }
             }
         } else {
-            // --- VIEW MODE ---
             Box(modifier = Modifier.fillMaxSize().background(Color.Black).onGloballyPositioned { containerSize = it.size }.transformable(state = transformState)
                 .combinedClickable(
                     onClick = { if (!uiVisible && activeSessionList.isNotEmpty()) { triggerVibration(context, VibrationStyle.TICK); if (currentIndex.intValue >= activeSessionList.size - 1) { activeSessionList.shuffle(); currentIndex.intValue = 0 } else currentIndex.intValue += 1 } else if (uiVisible) uiVisible = false },
