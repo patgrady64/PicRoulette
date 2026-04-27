@@ -152,28 +152,76 @@ fun getFavoritesList(context: Context): List<FavoriteFile> {
     return list
 }
 
-suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: String, scale: Float, offset: Offset, containerSize: IntSize): Uri? {
+suspend fun saveToFavoritesFolder(
+    context: Context,
+    sourceUri: Uri,
+    fileName: String,
+    scale: Float,
+    offset: Offset,
+    containerSize: IntSize
+): Uri? {
     return withContext(Dispatchers.IO) {
         try {
             val inputStream = context.contentResolver.openInputStream(sourceUri)
             val fullBitmap = BitmapFactory.decodeStream(inputStream) ?: return@withContext null
-            val imgW = fullBitmap.width.toFloat(); val imgH = fullBitmap.height.toFloat()
-            val cropW = (imgW / scale).toInt().coerceIn(1, fullBitmap.width)
-            val cropH = (imgH / scale).toInt().coerceIn(1, fullBitmap.height)
-            val startX = ((imgW - cropW) / 2 - (offset.x * (imgW / containerSize.width))).toInt().coerceIn(0, (imgW - cropW).toInt())
-            val startY = ((imgH - cropH) / 2 - (offset.y * (imgH / containerSize.height))).toInt().coerceIn(0, (imgH - cropH).toInt())
-            val cropped = Bitmap.createBitmap(fullBitmap, startX, startY, cropW, cropH)
-            val finalName = if (fileName.startsWith("PR_")) fileName else "PR_$fileName"
+
+            val imgW = fullBitmap.width.toFloat()
+            val imgH = fullBitmap.height.toFloat()
+            val viewW = containerSize.width.toFloat()
+            val viewH = containerSize.height.toFloat()
+
+            // 1. Find the scale factor that ContentScale.Fit uses
+            val baseScale = minOf(viewW / imgW, viewH / imgH)
+
+            // 2. Find the "Fit" dimensions (the image size before user zoom)
+            val fitW = imgW * baseScale
+            val fitH = imgH * baseScale
+
+            // 3. Calculate how much of the image is visible in "bitmap pixels"
+            // We divide by (baseScale * userScale) to translate screen pixels back to bitmap pixels
+            val totalScale = baseScale * scale
+            val cropW = (viewW / totalScale).coerceAtMost(imgW)
+            val cropH = (viewH / totalScale).coerceAtMost(imgH)
+
+            // 4. Calculate the center-point offset logic
+            // We subtract the user's pan (offset) but must normalize it by the total scale
+            val centerX = imgW / 2f - (offset.x / totalScale)
+            val centerY = imgH / 2f - (offset.y / totalScale)
+
+            // 5. Define the crop rectangle
+            val left = (centerX - cropW / 2f).toInt().coerceIn(0, (imgW - cropW).toInt())
+            val top = (centerY - cropH / 2f).toInt().coerceIn(0, (imgH - cropH).toInt())
+
+            val cropped = Bitmap.createBitmap(
+                fullBitmap,
+                left,
+                top,
+                cropW.toInt().coerceAtLeast(1),
+                cropH.toInt().coerceAtLeast(1)
+            )
+
+            // Save logic remains the same
+            val timeStamp = System.currentTimeMillis()
             val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, "Zoom_$finalName")
+                put(MediaStore.MediaColumns.DISPLAY_NAME, "Zoom_${timeStamp}_$fileName")
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
                 put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/PicRoulette_Favorites")
             }
+
             val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            uri?.let { context.contentResolver.openOutputStream(it)?.use { out -> cropped.compress(Bitmap.CompressFormat.JPEG, 95, out) } }
-            fullBitmap.recycle(); cropped.recycle()
+            uri?.let {
+                context.contentResolver.openOutputStream(it)?.use { out ->
+                    cropped.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                }
+            }
+
+            fullBitmap.recycle()
+            cropped.recycle()
             uri
-        } catch (e: Exception) { null }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
     }
 }
 
