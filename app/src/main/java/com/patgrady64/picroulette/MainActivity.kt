@@ -62,6 +62,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import android.graphics.Matrix
+import android.media.ExifInterface
 
 // --- DATA MODELS & STORAGE ---
 data class FavoriteFile(val fileNameOnDisk: String, val mediaUri: Uri)
@@ -163,7 +165,38 @@ suspend fun saveToFavoritesFolder(
     return withContext(Dispatchers.IO) {
         try {
             val inputStream = context.contentResolver.openInputStream(sourceUri)
-            val fullBitmap = BitmapFactory.decodeStream(inputStream) ?: return@withContext null
+            val originalBitmap = BitmapFactory.decodeStream(inputStream) ?: return@withContext null
+
+// Read EXIF orientation
+            val exifStream = context.contentResolver.openInputStream(sourceUri)
+            val exif = exifStream?.let { ExifInterface(it) }
+
+            val orientation = exif?.getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_NORMAL
+            ) ?: ExifInterface.ORIENTATION_NORMAL
+
+            val matrix = Matrix()
+
+            when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+            }
+
+            val fullBitmap = Bitmap.createBitmap(
+                originalBitmap,
+                0,
+                0,
+                originalBitmap.width,
+                originalBitmap.height,
+                matrix,
+                true
+            )
+
+            if (fullBitmap != originalBitmap) {
+                originalBitmap.recycle()
+            }
 
             val imgW = fullBitmap.width.toFloat()
             val imgH = fullBitmap.height.toFloat()
@@ -230,6 +263,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
+        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         splashScreen.setKeepOnScreenCondition { !isAppReady }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = WindowCompat.getInsetsController(window, window.decorView)
@@ -432,7 +466,21 @@ fun PicRouletteApp(themeColor: Color) {
                         context.contentResolver.query(currentUri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) name = it.getString(0) }
                         name.ifEmpty { currentUri.lastPathSegment ?: "img" }
                     }
-                    val isHeartFilled = favoriteFiles.any { it.fileNameOnDisk == "PR_$currentFileName" || it.fileNameOnDisk == currentFileName || it.fileNameOnDisk == "Zoom_$currentFileName" }
+                    val normalizedCurrentName = currentFileName
+                        .removePrefix("Fav_")
+                        .removePrefix("PR_")
+                        .replace(Regex("^Zoom_\\d+_"), "")
+                        .lowercase()
+                        .trim()
+
+                    val isHeartFilled = favoriteFiles.any { fav ->
+                        fav.fileNameOnDisk
+                            .removePrefix("Fav_")
+                            .removePrefix("PR_")
+                            .replace(Regex("^Zoom_\\d+_"), "")
+                            .lowercase()
+                            .trim() == normalizedCurrentName
+                    }
 
                     AsyncImage(model = currentUri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f))
                     AsyncImage(model = currentUri, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y), contentScale = ContentScale.Fit)
