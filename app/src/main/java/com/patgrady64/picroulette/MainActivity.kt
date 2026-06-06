@@ -13,6 +13,8 @@ import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -62,8 +64,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
-import android.graphics.Matrix
-import android.media.ExifInterface
 
 // --- DATA MODELS & STORAGE ---
 data class FavoriteFile(val fileNameOnDisk: String, val mediaUri: Uri)
@@ -154,107 +154,38 @@ fun getFavoritesList(context: Context): List<FavoriteFile> {
     return list
 }
 
-suspend fun saveToFavoritesFolder(
-    context: Context,
-    sourceUri: Uri,
-    fileName: String,
-    scale: Float,
-    offset: Offset,
-    containerSize: IntSize
-): Uri? {
+suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: String, scale: Float, offset: Offset, containerSize: IntSize): Uri? {
     return withContext(Dispatchers.IO) {
         try {
             val inputStream = context.contentResolver.openInputStream(sourceUri)
-            val originalBitmap = BitmapFactory.decodeStream(inputStream) ?: return@withContext null
+            val fullBitmap = BitmapFactory.decodeStream(inputStream) ?: return@withContext null
+            val imgW = fullBitmap.width.toFloat(); val imgH = fullBitmap.height.toFloat()
+            val viewW = containerSize.width.toFloat(); val viewH = containerSize.height.toFloat()
 
-// Read EXIF orientation
-            val exifStream = context.contentResolver.openInputStream(sourceUri)
-            val exif = exifStream?.let { ExifInterface(it) }
-
-            val orientation = exif?.getAttributeInt(
-                ExifInterface.TAG_ORIENTATION,
-                ExifInterface.ORIENTATION_NORMAL
-            ) ?: ExifInterface.ORIENTATION_NORMAL
-
-            val matrix = Matrix()
-
-            when (orientation) {
-                ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-                ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-                ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-            }
-
-            val fullBitmap = Bitmap.createBitmap(
-                originalBitmap,
-                0,
-                0,
-                originalBitmap.width,
-                originalBitmap.height,
-                matrix,
-                true
-            )
-
-            if (fullBitmap != originalBitmap) {
-                originalBitmap.recycle()
-            }
-
-            val imgW = fullBitmap.width.toFloat()
-            val imgH = fullBitmap.height.toFloat()
-            val viewW = containerSize.width.toFloat()
-            val viewH = containerSize.height.toFloat()
-
-            // 1. Find the scale factor that ContentScale.Fit uses
             val baseScale = minOf(viewW / imgW, viewH / imgH)
-
-            // 2. Find the "Fit" dimensions (the image size before user zoom)
-            val fitW = imgW * baseScale
-            val fitH = imgH * baseScale
-
-            // 3. Calculate how much of the image is visible in "bitmap pixels"
-            // We divide by (baseScale * userScale) to translate screen pixels back to bitmap pixels
             val totalScale = baseScale * scale
             val cropW = (viewW / totalScale).coerceAtMost(imgW)
             val cropH = (viewH / totalScale).coerceAtMost(imgH)
 
-            // 4. Calculate the center-point offset logic
-            // We subtract the user's pan (offset) but must normalize it by the total scale
             val centerX = imgW / 2f - (offset.x / totalScale)
             val centerY = imgH / 2f - (offset.y / totalScale)
 
-            // 5. Define the crop rectangle
             val left = (centerX - cropW / 2f).toInt().coerceIn(0, (imgW - cropW).toInt())
             val top = (centerY - cropH / 2f).toInt().coerceIn(0, (imgH - cropH).toInt())
 
-            val cropped = Bitmap.createBitmap(
-                fullBitmap,
-                left,
-                top,
-                cropW.toInt().coerceAtLeast(1),
-                cropH.toInt().coerceAtLeast(1)
-            )
-
-            // Save logic remains the same
+            val cropped = Bitmap.createBitmap(fullBitmap, left, top, cropW.toInt().coerceAtLeast(1), cropH.toInt().coerceAtLeast(1))
             val timeStamp = System.currentTimeMillis()
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, "Zoom_${timeStamp}_$fileName")
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
                 put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/PicRoulette_Favorites")
             }
-
             val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            uri?.let {
-                context.contentResolver.openOutputStream(it)?.use { out ->
-                    cropped.compress(Bitmap.CompressFormat.JPEG, 95, out)
-                }
-            }
+            uri?.let { context.contentResolver.openOutputStream(it)?.use { out -> cropped.compress(Bitmap.CompressFormat.JPEG, 95, out) } }
 
-            fullBitmap.recycle()
-            cropped.recycle()
+            fullBitmap.recycle(); cropped.recycle()
             uri
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
+        } catch (e: Exception) { null }
     }
 }
 
@@ -263,7 +194,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
+
+        // Lock window to portrait orientation programmatically
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+
         splashScreen.setKeepOnScreenCondition { !isAppReady }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val controller = WindowCompat.getInsetsController(window, window.decorView)
@@ -301,7 +235,11 @@ fun PicRouletteApp(themeColor: Color) {
     var uiVisible by remember { mutableStateOf(false) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
 
-    // --- ANIMATION LOGIC ---
+    // NEW STATES: Counter visibility toggle & shuffle text popups
+    var showCountSetting by remember { mutableStateOf(false) }
+    var showShuffleToast by remember { mutableStateOf(false) }
+
+    // --- Animation Logic ---
     val scanProgress by animateFloatAsState(
         targetValue = if (!isScanning.value) 1f
         else if (folderConfigs.isEmpty()) 0f
@@ -324,14 +262,9 @@ fun PicRouletteApp(themeColor: Color) {
 
     val scale = remember { mutableFloatStateOf(1f) }
     val offset = remember { mutableStateOf(Offset.Zero) }
-
-    // REFINED RESOLUTION FADE LOGIC
     var showResolution by remember { mutableStateOf(false) }
     var lastTransformTime by remember { mutableLongStateOf(0L) }
 
-    // This effect now tracks 'lastTransformTime'.
-    // Every single time the user moves/zooms, the timestamp updates,
-    // which cancels the previous delay and starts a fresh 1.5s countdown.
     LaunchedEffect(lastTransformTime) {
         if (lastTransformTime > 0) {
             showResolution = true
@@ -340,9 +273,17 @@ fun PicRouletteApp(themeColor: Color) {
         }
     }
 
+    // Controls display timing for the shuffle notification banner
+    LaunchedEffect(showShuffleToast) {
+        if (showShuffleToast) {
+            delay(1800)
+            showShuffleToast = false
+        }
+    }
+
     val transformState = rememberTransformableState { z, o, _ ->
         if (!uiVisible) {
-            lastTransformTime = System.currentTimeMillis() // Update timestamp to reset the timer
+            lastTransformTime = System.currentTimeMillis()
             scale.floatValue *= z
             offset.value += o
         }
@@ -400,22 +341,14 @@ fun PicRouletteApp(themeColor: Color) {
 
                             Box(modifier = Modifier
                                 .fillMaxSize()
-                                .background(
-                                    Brush.horizontalGradient(
-                                        0.0f to Color(0xFF7C4DFF),
-                                        scanProgress to themeColor,
-                                        scanProgress to Color.Transparent
-                                    )
-                                )
+                                .background(Brush.horizontalGradient(0.0f to Color(0xFF7C4DFF), scanProgress to themeColor, scanProgress to Color.Transparent))
                             )
 
                             if (isScanning.value && scanProgress > 0f && scanProgress < 1f) {
                                 Box(modifier = Modifier
                                     .fillMaxHeight()
                                     .width(6.dp)
-                                    .graphicsLayer {
-                                        translationX = (scanProgress * containerSize.width.toFloat()) - 3.dp.toPx()
-                                    }
+                                    .graphicsLayer { translationX = (scanProgress * containerSize.width.toFloat()) - 3.dp.toPx() }
                                     .background(Brush.verticalGradient(listOf(Color.Transparent, Color.White, Color.Transparent)))
                                     .blur(2.dp)
                                 )
@@ -440,7 +373,7 @@ fun PicRouletteApp(themeColor: Color) {
                             }
                         }
 
-                        Spacer(Modifier.height(40.dp))
+                        Spacer(Modifier.height(32.dp))
                         DashboardActionCard("Library Folders", "${folderConfigs.size} folders", Icons.Rounded.FolderCopy, Color(0xFFBB86FC)) { triggerVibration(context); showSheet = true }
                         Spacer(Modifier.height(16.dp))
                         DashboardActionCard("Your Favorites", "${favoriteFiles.size} images", Icons.Rounded.Favorite, Color(0xFFFF4081)) {
@@ -449,13 +382,52 @@ fun PicRouletteApp(themeColor: Color) {
                                 activeSessionList.addAll(favoriteFiles.map { it.mediaUri }.shuffled()); currentIndex.intValue = 0; isPlaying = true
                             }
                         }
+
+                        Spacer(Modifier.height(24.dp))
+
+                        // HOME SCREEN CONFIG: Show Count Toggle Switch Card
+                        Surface(
+                            shape = RoundedCornerShape(24.dp),
+                            color = Color.White.copy(0.02f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Rounded.Pin, null, tint = Color.Gray, modifier = Modifier.size(24.dp))
+                                Spacer(Modifier.width(16.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Show Count", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                    Text("Display layout index during playback", color = Color.Gray, fontSize = 12.sp)
+                                }
+                                Switch(
+                                    checked = showCountSetting,
+                                    onCheckedChange = { showCountSetting = it; triggerVibration(context) },
+                                    colors = SwitchDefaults.colors(checkedThumbColor = themeColor)
+                                )
+                            }
+                        }
                     }
                 }
             }
         } else {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black).onGloballyPositioned { containerSize = it.size }.transformable(state = transformState)
                 .combinedClickable(
-                    onClick = { if (!uiVisible && activeSessionList.isNotEmpty()) { triggerVibration(context, VibrationStyle.TICK); if (currentIndex.intValue >= activeSessionList.size - 1) { activeSessionList.shuffle(); currentIndex.intValue = 0 } else currentIndex.intValue += 1 } else if (uiVisible) uiVisible = false },
+                    onClick = {
+                        if (!uiVisible && activeSessionList.isNotEmpty()) {
+                            triggerVibration(context, VibrationStyle.TICK)
+                            if (currentIndex.intValue >= activeSessionList.size - 1) {
+                                activeSessionList.shuffle()
+                                currentIndex.intValue = 0
+                                showShuffleToast = true // Trigger notification panel on cycle reset
+                            } else {
+                                currentIndex.intValue += 1
+                            }
+                        } else if (uiVisible) {
+                            uiVisible = false
+                        }
+                    },
                     onLongClick = { triggerVibration(context, VibrationStyle.LONG); uiVisible = !uiVisible }
                 )
             ) {
@@ -466,26 +438,58 @@ fun PicRouletteApp(themeColor: Color) {
                         context.contentResolver.query(currentUri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) name = it.getString(0) }
                         name.ifEmpty { currentUri.lastPathSegment ?: "img" }
                     }
-                    val normalizedCurrentName = currentFileName
-                        .removePrefix("Fav_")
-                        .removePrefix("PR_")
-                        .replace(Regex("^Zoom_\\d+_"), "")
-                        .lowercase()
-                        .trim()
-
-                    val isHeartFilled = favoriteFiles.any { fav ->
-                        fav.fileNameOnDisk
-                            .removePrefix("Fav_")
-                            .removePrefix("PR_")
-                            .replace(Regex("^Zoom_\\d+_"), "")
-                            .lowercase()
-                            .trim() == normalizedCurrentName
-                    }
+                    val isHeartFilled = favoriteFiles.any { it.fileNameOnDisk.contains(currentFileName) }
 
                     AsyncImage(model = currentUri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f))
                     AsyncImage(model = currentUri, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y), contentScale = ContentScale.Fit)
 
-                    // RESOLUTION PILL: showResolution is now managed by the lastTransformTime countdown
+                    // IMMERSIVE OVERLAY: Lower Left Index Counter
+                    if (showCountSetting && !uiVisible) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(start = 20.dp, bottom = 48.dp)
+                                .background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "${currentIndex.intValue + 1} / ${activeSessionList.size}",
+                                color = Color.White.copy(alpha = 0.8f),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+
+                    // RESHUFFLED NOTIFICATION BANNER
+                    AnimatedVisibility(
+                        visible = showShuffleToast,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 80.dp),
+                        enter = fadeIn() + slideInVertically(),
+                        exit = fadeOut() + slideOutVertically()
+                    ) {
+                        Surface(
+                            color = themeColor,
+                            shape = RoundedCornerShape(16.dp),
+                            shadowElevation = 8.dp
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Rounded.Casino, null, tint = Color.Black, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "Reshuffled Whole Deck!",
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    }
+
                     AnimatedVisibility(visible = (scale.floatValue > 1.05f && showResolution), modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 120.dp), enter = fadeIn(), exit = fadeOut()) {
                         Surface(color = Color.Black.copy(0.6f), shape = CircleShape) {
                             val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -501,7 +505,19 @@ fun PicRouletteApp(themeColor: Color) {
                                 Button(onClick = { isPlaying = false }) { Text("Exit") }
                                 key(currentUri, isHeartFilled) {
                                     val hScale = remember { Animatable(1f) }
-                                    IconButton(onClick = { triggerVibration(context, VibrationStyle.HEARTBEAT); scope.launch { hScale.animateTo(1.4f, spring()); hScale.animateTo(1f, spring()); if (!isHeartFilled) saveToFavoritesFolder(context, currentUri, currentFileName, scale.floatValue, offset.value, containerSize); refreshFavs() } }, modifier = Modifier.background(Color.Black.copy(0.5f), CircleShape).size(56.dp).scale(hScale.value)) { Icon(if (isHeartFilled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, null, tint = Color.Red, modifier = Modifier.size(36.dp)) }
+                                    IconButton(
+                                        onClick = {
+                                            triggerVibration(context, VibrationStyle.HEARTBEAT)
+                                            scope.launch {
+                                                hScale.animateTo(1.4f, spring()); hScale.animateTo(1f, spring())
+                                                saveToFavoritesFolder(context, currentUri, currentFileName, scale.floatValue, offset.value, containerSize)
+                                                refreshFavs()
+                                            }
+                                        },
+                                        modifier = Modifier.background(Color.Black.copy(0.5f), CircleShape).size(56.dp).scale(hScale.value)
+                                    ) {
+                                        Icon(if (isHeartFilled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, null, tint = Color.Red, modifier = Modifier.size(36.dp))
+                                    }
                                 }
                                 Button(onClick = { if (currentIndex.intValue > 0) currentIndex.intValue -= 1 }) { Text("Back") }
                             }
