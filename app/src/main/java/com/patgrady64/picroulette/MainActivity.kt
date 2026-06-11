@@ -13,8 +13,6 @@ import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -65,16 +63,15 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
-// --- DATA MODELS & STORAGE ---
-data class FavoriteFile(val fileNameOnDisk: String, val mediaUri: Uri)
-data class FolderConfig(val uri: Uri, val includeSubfolders: Boolean = true)
+// --- DATA STORAGE UTILITIES ---
 
 fun saveFolders(context: Context, folders: List<FolderConfig>) {
     val prefs = context.getSharedPreferences("PicRoulettePrefs", Context.MODE_PRIVATE)
     val array = JSONArray()
     folders.forEach {
         val obj = JSONObject()
-        obj.put("uri", it.uri.toString()); obj.put("subfolders", it.includeSubfolders)
+        obj.put("uri", it.uri.toString())
+        obj.put("subfolders", it.includeSubfolders)
         array.put(obj)
     }
     prefs.edit().putString("folder_configs_json", array.toString()).apply()
@@ -154,13 +151,35 @@ fun getFavoritesList(context: Context): List<FavoriteFile> {
     return list
 }
 
+// --- NAME SCRUBBER UTILITY ---
+fun scrubFileName(rawName: String): String {
+    // 1. Drop any trailing extensions down to the root name (e.g. photo.png.jpg -> photo)
+    var cleanName = rawName.substringBeforeLast(".")
+    while (cleanName.contains(".")) {
+        cleanName = cleanName.substringBeforeLast(".")
+    }
+
+    // 2. Clear out common junk prefixes aggressively
+    cleanName = cleanName
+        .replace(Regex("(?i)^PR_FAV_\\d+_"), "")
+        .replace(Regex("(?i)^PR_FAV_"), "")
+        .replace(Regex("(?i)^Zoom_\\d+_"), "")
+        .replace(Regex("(?i)^Zoom_"), "")
+        .replace(Regex("(?i)^PR_SCREENShot_"), "")
+        .replace(Regex("(?i)^Screenshot_"), "")
+
+    return cleanName
+}
+
 suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: String, scale: Float, offset: Offset, containerSize: IntSize): Uri? {
     return withContext(Dispatchers.IO) {
         try {
             val inputStream = context.contentResolver.openInputStream(sourceUri)
             val fullBitmap = BitmapFactory.decodeStream(inputStream) ?: return@withContext null
-            val imgW = fullBitmap.width.toFloat(); val imgH = fullBitmap.height.toFloat()
-            val viewW = containerSize.width.toFloat(); val viewH = containerSize.height.toFloat()
+            val imgW = fullBitmap.width.toFloat()
+            val imgH = fullBitmap.height.toFloat()
+            val viewW = containerSize.width.toFloat()
+            val viewH = containerSize.height.toFloat()
 
             val baseScale = minOf(viewW / imgW, viewH / imgH)
             val totalScale = baseScale * scale
@@ -174,20 +193,27 @@ suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: St
             val top = (centerY - cropH / 2f).toInt().coerceIn(0, (imgH - cropH).toInt())
 
             val cropped = Bitmap.createBitmap(fullBitmap, left, top, cropW.toInt().coerceAtLeast(1), cropH.toInt().coerceAtLeast(1))
-            val timeStamp = System.currentTimeMillis()
+
+            // Scrub name completely before saving out to disk
+            val coreIdentifier = scrubFileName(fileName)
+            val finalName = "PR_FAV_$coreIdentifier.jpg"
+
             val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, "Zoom_${timeStamp}_$fileName")
+                put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
                 put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/PicRoulette_Favorites")
             }
             val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
             uri?.let { context.contentResolver.openOutputStream(it)?.use { out -> cropped.compress(Bitmap.CompressFormat.JPEG, 95, out) } }
 
-            fullBitmap.recycle(); cropped.recycle()
+            fullBitmap.recycle()
+            cropped.recycle()
             uri
         } catch (e: Exception) { null }
     }
 }
+
+// --- MAIN ACTIVITY ENTRY ---
 
 class MainActivity : ComponentActivity() {
     private var isAppReady = false
@@ -195,7 +221,6 @@ class MainActivity : ComponentActivity() {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
 
-        // Lock window to portrait orientation programmatically
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
 
         splashScreen.setKeepOnScreenCondition { !isAppReady }
@@ -212,6 +237,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+// --- COMPOSE UI LAYER ---
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -235,7 +262,6 @@ fun PicRouletteApp(themeColor: Color) {
     var uiVisible by remember { mutableStateOf(false) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
 
-    // NEW STATES: Counter visibility toggle & shuffle text popups
     var showCountSetting by remember { mutableStateOf(false) }
     var showShuffleToast by remember { mutableStateOf(false) }
 
@@ -273,7 +299,6 @@ fun PicRouletteApp(themeColor: Color) {
         }
     }
 
-    // Controls display timing for the shuffle notification banner
     LaunchedEffect(showShuffleToast) {
         if (showShuffleToast) {
             delay(1800)
@@ -309,7 +334,7 @@ fun PicRouletteApp(themeColor: Color) {
                     val images = queryImagesInFolder(context, config)
                     allImages.addAll(images)
                 } catch (e: Exception) {}
-                launch(Dispatchers.Main) { scanningUris.remove(config.uri) }
+                scanningUris.remove(config.uri)
             }
         }
         pickedFolderImages.value = allImages
@@ -385,7 +410,6 @@ fun PicRouletteApp(themeColor: Color) {
 
                         Spacer(Modifier.height(24.dp))
 
-                        // HOME SCREEN CONFIG: Show Count Toggle Switch Card
                         Surface(
                             shape = RoundedCornerShape(24.dp),
                             color = Color.White.copy(0.02f),
@@ -420,7 +444,7 @@ fun PicRouletteApp(themeColor: Color) {
                             if (currentIndex.intValue >= activeSessionList.size - 1) {
                                 activeSessionList.shuffle()
                                 currentIndex.intValue = 0
-                                showShuffleToast = true // Trigger notification panel on cycle reset
+                                showShuffleToast = true
                             } else {
                                 currentIndex.intValue += 1
                             }
@@ -438,12 +462,15 @@ fun PicRouletteApp(themeColor: Color) {
                         context.contentResolver.query(currentUri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) name = it.getString(0) }
                         name.ifEmpty { currentUri.lastPathSegment ?: "img" }
                     }
-                    val isHeartFilled = favoriteFiles.any { it.fileNameOnDisk.contains(currentFileName) }
+
+                    // Look strictly for matching core identifier names
+                    val isHeartFilled = favoriteFiles.any { fav ->
+                        scrubFileName(fav.fileNameOnDisk) == scrubFileName(currentFileName)
+                    }
 
                     AsyncImage(model = currentUri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f))
                     AsyncImage(model = currentUri, contentDescription = null, modifier = Modifier.fillMaxSize().graphicsLayer(scaleX = scale.floatValue, scaleY = scale.floatValue, translationX = offset.value.x, translationY = offset.value.y), contentScale = ContentScale.Fit)
 
-                    // IMMERSIVE OVERLAY: Lower Left Index Counter
                     if (showCountSetting && !uiVisible) {
                         Box(
                             modifier = Modifier
@@ -462,7 +489,6 @@ fun PicRouletteApp(themeColor: Color) {
                         }
                     }
 
-                    // RESHUFFLED NOTIFICATION BANNER
                     AnimatedVisibility(
                         visible = showShuffleToast,
                         modifier = Modifier.align(Alignment.TopCenter).padding(top = 80.dp),
@@ -509,7 +535,8 @@ fun PicRouletteApp(themeColor: Color) {
                                         onClick = {
                                             triggerVibration(context, VibrationStyle.HEARTBEAT)
                                             scope.launch {
-                                                hScale.animateTo(1.4f, spring()); hScale.animateTo(1f, spring())
+                                                hScale.animateTo(1.4f, spring())
+                                                hScale.animateTo(1f, spring())
                                                 saveToFavoritesFolder(context, currentUri, currentFileName, scale.floatValue, offset.value, containerSize)
                                                 refreshFavs()
                                             }
