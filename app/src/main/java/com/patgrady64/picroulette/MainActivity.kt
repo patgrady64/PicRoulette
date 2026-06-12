@@ -336,7 +336,10 @@ fun PicRouletteApp(themeColor: Color) {
     }
 
     LaunchedEffect(Unit) { refreshFavs(); scanAllFolders() }
-    LaunchedEffect(currentIndex.intValue) { scale.floatValue = 1f; offset.value = Offset.Zero; uiVisible = false }
+    LaunchedEffect(currentIndex.intValue) {
+        scale.floatValue = 1f;
+        offset.value = Offset.Zero;
+    }
 
     Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
         if (!isPlaying) {
@@ -402,30 +405,6 @@ fun PicRouletteApp(themeColor: Color) {
                             }
                         }
 
-                        Spacer(Modifier.height(24.dp))
-
-                        Surface(
-                            shape = RoundedCornerShape(24.dp),
-                            color = Color.White.copy(0.02f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Rounded.Pin, null, tint = Color.Gray, modifier = Modifier.size(24.dp))
-                                Spacer(Modifier.width(16.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text("Show Count", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                                    Text("Display layout index during playback", color = Color.Gray, fontSize = 12.sp)
-                                }
-                                Switch(
-                                    checked = showCountSetting,
-                                    onCheckedChange = { showCountSetting = it; triggerVibration(context) },
-                                    colors = SwitchDefaults.colors(checkedThumbColor = themeColor)
-                                )
-                            }
-                        }
                     }
                 }
             }
@@ -433,7 +412,7 @@ fun PicRouletteApp(themeColor: Color) {
             Box(modifier = Modifier.fillMaxSize().background(Color.Black).onGloballyPositioned { containerSize = it.size }.transformable(state = transformState)
                 .combinedClickable(
                     onClick = {
-                        if (!uiVisible && activeSessionList.isNotEmpty()) {
+                        if (activeSessionList.isNotEmpty()) {
                             triggerVibration(context, VibrationStyle.TICK)
                             if (currentIndex.intValue >= activeSessionList.size - 1) {
                                 activeSessionList.shuffle()
@@ -442,11 +421,13 @@ fun PicRouletteApp(themeColor: Color) {
                             } else {
                                 currentIndex.intValue += 1
                             }
-                        } else if (uiVisible) {
-                            uiVisible = false
                         }
                     },
-                    onLongClick = { triggerVibration(context, VibrationStyle.LONG); uiVisible = !uiVisible }
+                    onLongClick = {
+                        // 2. Only use long-press to toggle the menu visibility
+                        triggerVibration(context, VibrationStyle.LONG)
+                        uiVisible = !uiVisible
+                    }
                 )
             ) {
                 val currentUri = activeSessionList.getOrNull(currentIndex.intValue)
@@ -526,68 +507,97 @@ fun PicRouletteApp(themeColor: Color) {
                         }
                     }
 
-                    AnimatedVisibility(visible = uiVisible, enter = fadeIn() + slideInVertically(), exit = fadeOut() + slideOutVertically()) {
+                    AnimatedVisibility(
+                        visible = uiVisible,
+                        enter = fadeIn() + slideInVertically(),
+                        exit = fadeOut() + slideOutVertically()
+                    ) {
                         Box(modifier = Modifier.fillMaxSize()) {
-                            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 40.dp).align(Alignment.TopCenter), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+
+                            // 1. TOP ROW: Exit, Info, Heart, and Back buttons
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp, vertical = 40.dp)
+                                    .align(Alignment.TopCenter),
+                                Arrangement.SpaceBetween,
+                                Alignment.CenterVertically
+                            ) {
                                 Button(onClick = { isPlaying = false }) { Text("Exit") }
 
+                                // Metadata Info Button (Larger)
                                 IconButton(onClick = { showMetadata = !showMetadata }, modifier = Modifier.size(64.dp)) {
                                     Icon(Icons.Rounded.Info, "Info", tint = Color.White, modifier = Modifier.size(48.dp))
                                 }
 
+                                // Heart Button
                                 key(currentUri, isHeartFilled) {
                                     val hScale = remember { Animatable(1f) }
                                     IconButton(
                                         onClick = {
                                             triggerVibration(context, VibrationStyle.HEARTBEAT)
                                             scope.launch {
-                                                hScale.animateTo(1.4f, spring())
-                                                hScale.animateTo(1f, spring())
-                                                saveToFavoritesFolder(context, currentUri, currentFileName, scale.floatValue, offset.value, containerSize)
-                                                refreshFavs()
+                                                if (isHeartFilled) {
+                                                    // Find the actual favorite file to delete
+                                                    val favToDelete = favoriteFiles.find { scrubFileName(it.fileNameOnDisk) == scrubFileName(currentFileName) }
+                                                    favToDelete?.let {
+                                                        deleteFavorite(context, it.mediaUri)
+                                                        refreshFavs() // Refresh the list to update UI
+                                                    }
+                                                } else {
+                                                    // Keep your existing save logic
+                                                    hScale.animateTo(1.4f, spring())
+                                                    hScale.animateTo(1f, spring())
+                                                    saveToFavoritesFolder(context, currentUri!!, currentFileName, scale.floatValue, offset.value, containerSize)
+                                                    refreshFavs()
+                                                }
                                             }
                                         },
                                         modifier = Modifier.background(Color.Black.copy(0.5f), CircleShape).size(56.dp).scale(hScale.value)
                                     ) {
-                                        Icon(if (isHeartFilled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, null, tint = Color.Red, modifier = Modifier.size(36.dp))
+                                        Icon(
+                                            imageVector = if (isHeartFilled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                            contentDescription = "Favorite",
+                                            tint = Color.Red,
+                                            modifier = Modifier.size(36.dp)
+                                        )
                                     }
                                 }
+
                                 Button(onClick = { if (currentIndex.intValue > 0) currentIndex.intValue -= 1 }) { Text("Back") }
                             }
 
-                            AnimatedVisibility(visible = showMetadata, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()) {
-                                Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(0.6f)).clickable { showMetadata = false }, contentAlignment = Alignment.Center) {
-                                    Surface(color = Color(0xFF1A1A1A), shape = RoundedCornerShape(24.dp), modifier = Modifier.padding(24.dp).fillMaxWidth().clickable(enabled = false) {}) {
-                                        Column(modifier = Modifier.padding(24.dp)) {
-                                            Text("Photo Metadata", style = MaterialTheme.typography.headlineSmall, color = themeColor)
-                                            Spacer(Modifier.height(16.dp))
-
-                                            // Fetch file details
-                                            val fileDetails = context.contentResolver.query(currentUri ?: Uri.EMPTY, null, null, null, null)?.use { cursor ->
-                                                val nameIdx = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
-                                                val sizeIdx = cursor.getColumnIndex(MediaStore.Images.Media.SIZE)
-                                                cursor.moveToFirst()
-                                                val name = cursor.getString(nameIdx) ?: "Unknown"
-                                                val size = cursor.getLong(sizeIdx)
-                                                Pair(name, size)
-                                            }
-
-                                            val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                            context.contentResolver.openInputStream(currentUri ?: Uri.EMPTY)?.use { BitmapFactory.decodeStream(it, null, opt) }
-
-                                            MetadataRow("Filename", fileDetails?.first ?: "Unknown")
-                                            MetadataRow("Size", "${(fileDetails?.second ?: 0) / 1024} KB")
-                                            MetadataRow("Resolution", "${opt.outWidth} x ${opt.outHeight} px")
-                                            MetadataRow("URI Path", currentUri?.path ?: "N/A")
-
-                                            Spacer(Modifier.height(24.dp))
-                                            Button(onClick = { showMetadata = false }, modifier = Modifier.fillMaxWidth()) { Text("Close") }
-                                        }
-                                    }
-                                }
+                            // 2. LOWER LEFT: Show Count toggle
+                            IconButton(
+                                onClick = {
+                                    showCountSetting = !showCountSetting
+                                    triggerVibration(context)
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(24.dp)
+                                    .background(Color.Black.copy(0.4f), CircleShape)
+                            ) {
+                                Icon(
+                                    imageVector = if (showCountSetting) Icons.Rounded.Pin else Icons.Rounded.PinDrop,
+                                    contentDescription = "Toggle Count",
+                                    tint = if (showCountSetting) themeColor else Color.White
+                                )
                             }
 
-                            if (!isFavoritesMode) IconButton(onClick = { triggerVibration(context, VibrationStyle.LONG); showDeleteDialog = true }, modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp).size(64.dp).background(Color.Red.copy(0.2f), CircleShape)) { Icon(Icons.Rounded.DeleteOutline, "Delete", tint = Color.Red, modifier = Modifier.size(32.dp)) }
+                            // 3. LOWER RIGHT: Delete button
+                            if (!isFavoritesMode) {
+                                IconButton(
+                                    onClick = { triggerVibration(context, VibrationStyle.LONG); showDeleteDialog = true },
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(24.dp)
+                                        .size(64.dp)
+                                        .background(Color.Red.copy(0.2f), CircleShape)
+                                ) {
+                                    Icon(Icons.Rounded.DeleteOutline, "Delete", tint = Color.Red, modifier = Modifier.size(32.dp))
+                                }
+                            }
                         }
                     }
                     if (showDeleteDialog) {
@@ -634,5 +644,13 @@ fun DashboardActionCard(title: String, subtitle: String, icon: ImageVector, colo
             Column(Modifier.weight(1f)) { Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp); Text(subtitle, color = Color.Gray.copy(0.8f), fontSize = 13.sp) }
             Icon(Icons.Rounded.ChevronRight, null, tint = Color.White.copy(0.2f))
         }
+    }
+}
+
+fun deleteFavorite(context: Context, favoriteUri: Uri) {
+    try {
+        context.contentResolver.delete(favoriteUri, null, null)
+    } catch (e: Exception) {
+        e.printStackTrace()
     }
 }
