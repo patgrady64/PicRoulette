@@ -539,25 +539,38 @@ fun PicRouletteApp(themeColor: Color) {
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    // --- NEW: RECURSIVE TOGGLE ---
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Checkbox(
+                                            checked = config.includeSubfolders,
+                                            onCheckedChange = { isChecked ->
+                                                // Update the specific config with the new value
+                                                folderConfigs = folderConfigs.map {
+                                                    if (it == config) it.copy(includeSubfolders = isChecked) else it
+                                                }
+                                                // Save the new state and re-scan
+                                                saveFolders(context, folderConfigs)
+                                                scope.launch { scanAllFolders() }
+                                            }
+                                        )
+                                        Text("Recursive", fontSize = 10.sp, color = Color.Gray)
+                                    }
+
+                                    Spacer(Modifier.width(8.dp))
+
                                     Text(
                                         text = config.uri.path?.substringAfterLast("/") ?: "Folder",
                                         modifier = Modifier.weight(1f),
                                         style = MaterialTheme.typography.bodyMedium
                                     )
-                                    // Trashcan button
+
+                                    // Existing trashcan button
                                     IconButton(onClick = {
-                                        // 1. Remove from list
                                         folderConfigs = folderConfigs.filter { it != config }
-                                        // 2. Persist the change
                                         saveFolders(context, folderConfigs)
-                                        // 3. Trigger a re-scan so the library count updates
                                         scope.launch { scanAllFolders() }
                                     }) {
-                                        Icon(
-                                            Icons.Rounded.DeleteOutline,
-                                            "Remove",
-                                            tint = Color.Red
-                                        )
+                                        Icon(Icons.Rounded.DeleteOutline, "Remove", tint = Color.Red)
                                     }
                                 }
                             }
