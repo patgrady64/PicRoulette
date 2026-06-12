@@ -137,7 +137,7 @@ fun getFavoritesList(context: Context): List<FavoriteFile> {
     val list = mutableListOf<FavoriteFile>()
     val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME)
     val selection = "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
-    val args = arrayOf("%Pictures/PicRoulette_Favorites%")
+    val args = arrayOf("%Pictures/PR_FAVS%")
     try {
         context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, selection, args, null)?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
@@ -153,22 +153,12 @@ fun getFavoritesList(context: Context): List<FavoriteFile> {
 
 // --- NAME SCRUBBER UTILITY ---
 fun scrubFileName(rawName: String): String {
-    // 1. Drop any trailing extensions down to the root name (e.g. photo.png.jpg -> photo)
-    var cleanName = rawName.substringBeforeLast(".")
-    while (cleanName.contains(".")) {
-        cleanName = cleanName.substringBeforeLast(".")
-    }
+    // 1. Remove extension (e.g., "IMG_123.jpg" -> "IMG_123")
+    val nameWithoutExt = rawName.substringBeforeLast(".")
 
-    // 2. Clear out common junk prefixes aggressively
-    cleanName = cleanName
-        .replace(Regex("(?i)^PR_FAV_\\d+_"), "")
-        .replace(Regex("(?i)^PR_FAV_"), "")
-        .replace(Regex("(?i)^Zoom_\\d+_"), "")
-        .replace(Regex("(?i)^Zoom_"), "")
-        .replace(Regex("(?i)^PR_SCREENShot_"), "")
-        .replace(Regex("(?i)^Screenshot_"), "")
-
-    return cleanName
+    // 2. Remove "IMG_" or "PR_FAV_" or any other prefix you might have
+    // This regex replaces any known prefix at the start of the string
+    return nameWithoutExt.replace(Regex("^(?i)(IMG_|PR_FAV_|Zoom_|Screenshot_|PR_SCREENShot_|_\\d+)*"), "")
 }
 
 suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: String, scale: Float, offset: Offset, containerSize: IntSize): Uri? {
@@ -196,12 +186,14 @@ suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: St
 
             // Scrub name completely before saving out to disk
             val coreIdentifier = scrubFileName(fileName)
-            val finalName = "PR_FAV_$coreIdentifier.jpg"
+
+            // Save as just the core name + extension, no "PR_FAV_" prefix needed
+            val finalName = "$coreIdentifier.jpg"
 
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/PicRoulette_Favorites")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/PR_FAVS")
             }
             val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
             uri?.let { context.contentResolver.openOutputStream(it)?.use { out -> cropped.compress(Bitmap.CompressFormat.JPEG, 95, out) } }
@@ -264,6 +256,8 @@ fun PicRouletteApp(themeColor: Color) {
 
     var showCountSetting by remember { mutableStateOf(false) }
     var showShuffleToast by remember { mutableStateOf(false) }
+
+    var showMetadata by remember { mutableStateOf(false) }
 
     // --- Animation Logic ---
     val scanProgress by animateFloatAsState(
@@ -457,15 +451,22 @@ fun PicRouletteApp(themeColor: Color) {
             ) {
                 val currentUri = activeSessionList.getOrNull(currentIndex.intValue)
                 if (currentUri != null) {
+
+                    // 1. Extract the name here, before defining isHeartFilled
                     val currentFileName = remember(currentUri) {
                         var name = ""
-                        context.contentResolver.query(currentUri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) name = it.getString(0) }
+                        context.contentResolver.query(currentUri, arrayOf(MediaStore.Images.Media.DISPLAY_NAME), null, null, null)?.use {
+                            if (it.moveToFirst()) name = it.getString(0)
+                        }
                         name.ifEmpty { currentUri.lastPathSegment ?: "img" }
                     }
 
-                    // Look strictly for matching core identifier names
-                    val isHeartFilled = favoriteFiles.any { fav ->
-                        scrubFileName(fav.fileNameOnDisk) == scrubFileName(currentFileName)
+                    // 2. Now use that extracted name in your calculation
+                    val isHeartFilled = remember(favoriteFiles, currentFileName) {
+                        val scrubbedCurrent = scrubFileName(currentFileName)
+                        favoriteFiles.any { fav ->
+                            scrubFileName(fav.fileNameOnDisk) == scrubbedCurrent
+                        }
                     }
 
                     AsyncImage(model = currentUri, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f))
@@ -529,6 +530,11 @@ fun PicRouletteApp(themeColor: Color) {
                         Box(modifier = Modifier.fillMaxSize()) {
                             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 40.dp).align(Alignment.TopCenter), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                                 Button(onClick = { isPlaying = false }) { Text("Exit") }
+
+                                IconButton(onClick = { showMetadata = !showMetadata }, modifier = Modifier.size(64.dp)) {
+                                    Icon(Icons.Rounded.Info, "Info", tint = Color.White, modifier = Modifier.size(48.dp))
+                                }
+
                                 key(currentUri, isHeartFilled) {
                                     val hScale = remember { Animatable(1f) }
                                     IconButton(
@@ -548,6 +554,39 @@ fun PicRouletteApp(themeColor: Color) {
                                 }
                                 Button(onClick = { if (currentIndex.intValue > 0) currentIndex.intValue -= 1 }) { Text("Back") }
                             }
+
+                            AnimatedVisibility(visible = showMetadata, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()) {
+                                Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(0.6f)).clickable { showMetadata = false }, contentAlignment = Alignment.Center) {
+                                    Surface(color = Color(0xFF1A1A1A), shape = RoundedCornerShape(24.dp), modifier = Modifier.padding(24.dp).fillMaxWidth().clickable(enabled = false) {}) {
+                                        Column(modifier = Modifier.padding(24.dp)) {
+                                            Text("Photo Metadata", style = MaterialTheme.typography.headlineSmall, color = themeColor)
+                                            Spacer(Modifier.height(16.dp))
+
+                                            // Fetch file details
+                                            val fileDetails = context.contentResolver.query(currentUri ?: Uri.EMPTY, null, null, null, null)?.use { cursor ->
+                                                val nameIdx = cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME)
+                                                val sizeIdx = cursor.getColumnIndex(MediaStore.Images.Media.SIZE)
+                                                cursor.moveToFirst()
+                                                val name = cursor.getString(nameIdx) ?: "Unknown"
+                                                val size = cursor.getLong(sizeIdx)
+                                                Pair(name, size)
+                                            }
+
+                                            val opt = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                            context.contentResolver.openInputStream(currentUri ?: Uri.EMPTY)?.use { BitmapFactory.decodeStream(it, null, opt) }
+
+                                            MetadataRow("Filename", fileDetails?.first ?: "Unknown")
+                                            MetadataRow("Size", "${(fileDetails?.second ?: 0) / 1024} KB")
+                                            MetadataRow("Resolution", "${opt.outWidth} x ${opt.outHeight} px")
+                                            MetadataRow("URI Path", currentUri?.path ?: "N/A")
+
+                                            Spacer(Modifier.height(24.dp))
+                                            Button(onClick = { showMetadata = false }, modifier = Modifier.fillMaxWidth()) { Text("Close") }
+                                        }
+                                    }
+                                }
+                            }
+
                             if (!isFavoritesMode) IconButton(onClick = { triggerVibration(context, VibrationStyle.LONG); showDeleteDialog = true }, modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp).size(64.dp).background(Color.Red.copy(0.2f), CircleShape)) { Icon(Icons.Rounded.DeleteOutline, "Delete", tint = Color.Red, modifier = Modifier.size(32.dp)) }
                         }
                     }
@@ -575,6 +614,14 @@ fun PicRouletteApp(themeColor: Color) {
                 }
             }
         }
+    }
+}
+
+@Composable
+fun MetadataRow(label: String, value: String) {
+    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+        Text(label, color = Color.Gray, fontSize = 12.sp)
+        Text(value, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
     }
 }
 
