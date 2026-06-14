@@ -1,0 +1,54 @@
+[33mf820c7b[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{0}: reset: moving to origin/main
+[33mf816216[m HEAD@{1}: reset: moving to f8162168901369a8615bc7ceca40ea698db83d2c
+[33mf820c7b[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{2}: reset: moving to f820c7bcef81cec5c4b26a1118b9d7c1f564f76f
+[33m0aca342[m HEAD@{3}: reset: moving to 0aca342523a12ec99d8cb4e98cdfd87b66e86cce
+[33mf816216[m HEAD@{4}: reset: moving to f8162168901369a8615bc7ceca40ea698db83d2c
+[33mf820c7b[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{5}: commit: refactored entire project into differnt files and folders
+[33mf816216[m HEAD@{6}: commit: just put the data storage utilities from the widget (which got removed somehow) file to the main file
+[33m0aca342[m HEAD@{7}: commit: Added recursive directory search toggle
+[33mb2ec3c6[m HEAD@{8}: commit: Fixed: if image is moved and then close the viewer, the images go back to being normally placed on next start
+[33mbad4de7[m HEAD@{9}: commit: added metadata overlay, favorite toggle, and UI control improvements
+[33m2af4d18[m HEAD@{10}: commit: Added information icon to get photo metadata and (hopefully) fixed heart being colored in when photo is in PR_FAVS folder
+[33m9ea3561[m HEAD@{11}: commit: Moved PicRouletteWidget.kt
+[33m37b99fe[m HEAD@{12}: commit: Created a widget to show random images from your favorite folder and changes when tapped
+[33mf2048b9[m HEAD@{13}: commit: Added count checkbox and a reshuffle toast
+[33m2811c0b[m HEAD@{14}: commit: Forced Portrait mode so the screen doesn't rotate
+[33mbf35f65[m HEAD@{15}: commit: When zoomed in and added to favorites, the image saves at the zommed in size
+[33md0b4d75[m HEAD@{16}: commit: fix: reset resolution overlay timer on every transformation event
+[33m7b27683[m HEAD@{17}: commit: correct scan animation direction and resolve cursor column errors
+[33mde1540e[m HEAD@{18}: commit: recalibrate scan progress to travel left-to-right with cinematic leading edge.. I don't think this is doing what I want it to do but i think it's close
+[33mb0fa132[m HEAD@{19}: commit: implement high-contrast 'Power Up' scan animation with cinematic gradient sweep
+[33meeff9d4[m HEAD@{20}: commit: menu didn't disapear for some reason after second long press. Now does.
+[33m7944ba9[m HEAD@{21}: commit: zoom disappears
+[33m4d12806[m HEAD@{22}: reset: moving to HEAD
+[33m4d12806[m HEAD@{23}: commit: Pics don't move when menu is up. Also, probably some other stuff I forgot about, it's been a while
+[33ma968255[m HEAD@{24}: reset: moving to a96825577293c46f5ea293ecea6e1a0cc089d889
+[33m26b7728[m HEAD@{25}: reset: moving to 26b77283e716244eb726ba95d218872930bd232d
+[33m26b7728[m HEAD@{26}: reset: moving to 26b77283e716244eb726ba95d218872930bd232d
+[33m26b7728[m HEAD@{27}: reset: moving to 26b77283e716244eb726ba95d218872930bd232d
+[33m26b7728[m HEAD@{28}: reset: moving to 26b77283e716244eb726ba95d218872930bd232d
+[33m26b7728[m HEAD@{29}: reset: moving to 26b77283e716244eb726ba95d218872930bd232d
+[33m26b7728[m HEAD@{30}: reset: moving to 26b77283e716244eb726ba95d218872930bd232d
+[33m26b7728[m HEAD@{31}: reset: moving to 26b77283e716244eb726ba95d218872930bd232d
+[33m26b7728[m HEAD@{32}: reset: moving to 26b77283e716244eb726ba95d218872930bd232d
+[33m26b7728[m HEAD@{33}: reset: moving to 26b77283e716244eb726ba95d218872930bd232d
+[33ma968255[m HEAD@{34}: reset: moving to a96825577293c46f5ea293ecea6e1a0cc089d889
+[33ma968255[m HEAD@{35}: reset: moving to a96825577293c46f5ea293ecea6e1a0cc089d889
+[33m26b7728[m HEAD@{36}: commit: dynamic background
+[33ma968255[m HEAD@{37}: commit: Better Transition
+[33m0a8287d[m HEAD@{38}: commit: Made sure device stays awake while viewing pics
+[33m12dda87[m HEAD@{39}: commit: Update Readme.md
+[33m7d7d5ec[m HEAD@{40}: commit (amend): Fixed button visibility on bright photos
+[33m592bb38[m HEAD@{41}: commit: add session reshuffling and delete undo safety
+[33m279a2e9[m HEAD@{42}: commit: add session reshuffling and delete undo safety
+[33m6a2aabe[m HEAD@{43}: commit: implement immersive fullscreen mode and permanent photo deletion
+[33m5a21689[m HEAD@{44}: reset: moving to HEAD
+[33m5a21689[m HEAD@{45}: reset: moving to HEAD
+[33m5a21689[m HEAD@{46}: commit: App doesn't crash when removing the last favorite
+[33m47dc933[m HEAD@{47}: commit: implement memory-managed session handling and instant favorites sync
+[33m0b68827[m HEAD@{48}: commit: Added persistance to remember last folder chosen. Added ability to pick multiple folders and added a favorites feature
+[33mfa9971f[m HEAD@{49}: commit: removed counter and made it random every time
+[33m5f32756[m HEAD@{50}: commit: removed counter and made it random every time
+[33mbed60cf[m HEAD@{51}: commit: v1 of Pic Roulette
+[33mb876fa4[m HEAD@{52}: Branch: renamed refs/heads/master to refs/heads/main
+[33mb876fa4[m HEAD@{54}: commit (initial): first commit
