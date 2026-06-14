@@ -65,6 +65,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 // --- DATA STORAGE UTILITIES ---
+data class FavoriteFile(val fileNameOnDisk: String, val mediaUri: Uri)
+data class FolderConfig(val uri: Uri, val includeSubfolders: Boolean)
 
 fun saveFolders(context: Context, folders: List<FolderConfig>) {
     val prefs = context.getSharedPreferences("PicRoulettePrefs", Context.MODE_PRIVATE)
