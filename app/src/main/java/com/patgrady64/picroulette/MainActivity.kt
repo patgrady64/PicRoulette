@@ -63,10 +63,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.stream.Collectors.mapping
 
 // --- DATA STORAGE UTILITIES ---
 data class FavoriteFile(val fileNameOnDisk: String, val mediaUri: Uri)
 data class FolderConfig(val uri: Uri, val includeSubfolders: Boolean)
+data class FavoriteMapping(
+    val originalUri: String,
+    val favoriteUri: String,
+    val originalFileName: String,
+    val dateAdded: Long,
+    val isDeleted: Boolean = false
+)
 
 fun saveFolders(context: Context, folders: List<FolderConfig>) {
     val prefs = context.getSharedPreferences("PicRoulettePrefs", Context.MODE_PRIVATE)
@@ -154,14 +162,86 @@ fun getFavoritesList(context: Context): List<FavoriteFile> {
     return list
 }
 
-// --- NAME SCRUBBER UTILITY ---
-fun scrubFileName(rawName: String): String {
-    // 1. Remove extension (e.g., "IMG_123.jpg" -> "IMG_123")
-    val nameWithoutExt = rawName.substringBeforeLast(".")
+fun saveFavoriteMappings(
+    context: Context,
+    mappings: List<FavoriteMapping>
+) {
+    val prefs =
+        context.getSharedPreferences(
+            "PicRoulettePrefs",
+            Context.MODE_PRIVATE
+        )
 
-    // 2. Remove "IMG_" or "PR_FAV_" or any other prefix you might have
-    // This regex replaces any known prefix at the start of the string
-    return nameWithoutExt.replace(Regex("^(?i)(IMG_|PR_FAV_|Zoom_|Screenshot_|PR_SCREENShot_|_\\d+)*"), "")
+    val array = JSONArray()
+
+    mappings.forEach { mapping ->
+
+        val obj = JSONObject()
+
+        obj.put("originalUri", mapping.originalUri)
+        obj.put("favoriteUri", mapping.favoriteUri)
+        obj.put("originalFileName", mapping.originalFileName)
+        obj.put("dateAdded", mapping.dateAdded)
+
+        array.put(obj)
+    }
+
+    prefs.edit()
+        .putString(
+            "favorite_mappings",
+            array.toString()
+        )
+        .apply()
+}
+
+fun getFavoriteMappings(
+    context: Context
+): MutableList<FavoriteMapping> {
+
+    val prefs =
+        context.getSharedPreferences(
+            "PicRoulettePrefs",
+            Context.MODE_PRIVATE
+        )
+
+    val json =
+        prefs.getString(
+            "favorite_mappings",
+            null
+        ) ?: return mutableListOf()
+
+    val list = mutableListOf<FavoriteMapping>()
+
+    try {
+
+        val array = JSONArray(json)
+
+        for (i in 0 until array.length()) {
+
+            val obj = array.getJSONObject(i)
+
+            list.add(
+                FavoriteMapping(
+                    originalUri =
+                        obj.getString("originalUri"),
+
+                    favoriteUri =
+                        obj.getString("favoriteUri"),
+
+                    originalFileName =
+                        obj.getString("originalFileName"),
+
+                    dateAdded =
+                        obj.getLong("dateAdded")
+                )
+            )
+        }
+
+    } catch (e: Exception) {
+        e.printStackTrace()
+    }
+
+    return list
 }
 
 suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: String, scale: Float, offset: Offset, containerSize: IntSize): Uri? {
@@ -214,8 +294,11 @@ suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: St
                 rotatedBitmap.recycle()
             }
 
-            val coreIdentifier = scrubFileName(fileName)
-            val finalName = "$coreIdentifier.jpg"
+            val finalName =
+                java.text.SimpleDateFormat(
+                    "yyyyMMddHHmmss",
+                    java.util.Locale.US
+                ).format(java.util.Date()) + ".jpg"
 
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
@@ -274,6 +357,12 @@ fun PicRouletteApp(themeColor: Color) {
     val scanningUris = remember { mutableStateListOf<Uri>() }
     val activeSessionList = remember { mutableStateListOf<Uri>() }
     var favoriteFiles by remember { mutableStateOf<List<FavoriteFile>>(emptyList()) }
+    var favoriteMappings by remember {
+        mutableStateOf(
+            getFavoriteMappings(context)
+        )
+    }
+
     var isPlaying by remember { mutableStateOf(false) }
     var isFavoritesMode by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -287,6 +376,10 @@ fun PicRouletteApp(themeColor: Color) {
     var showShuffleToast by remember { mutableStateOf(false) }
 
     var showMetadata by remember { mutableStateOf(false) }
+
+    var currentOriginalUri by remember {
+        mutableStateOf<Uri?>(null)
+    }
 
     // --- Animation Logic ---
     val scanProgress by animateFloatAsState(
@@ -315,8 +408,6 @@ fun PicRouletteApp(themeColor: Color) {
     val offset = remember { mutableStateOf(Offset.Zero) }
     var showResolution by remember { mutableStateOf(false) }
     var lastTransformTime by remember { mutableLongStateOf(0L) }
-
-
 
     LaunchedEffect(lastTransformTime) {
         if (lastTransformTime > 0) {
@@ -351,7 +442,39 @@ fun PicRouletteApp(themeColor: Color) {
     fun refreshFavs() {
         scope.launch(Dispatchers.IO) {
             val list = getFavoritesList(context)
-            withContext(Dispatchers.Main) { favoriteFiles = list.toList() }
+            withContext(Dispatchers.Main) {
+                favoriteFiles = list.toList()
+
+                val existingUris =
+                    list.map {
+                        it.mediaUri.toString()
+                    }.toSet()
+
+                favoriteMappings =
+                    favoriteMappings.map {
+                        mapping ->
+                        if (mapping.favoriteUri in existingUris) {
+                            mapping
+                        } else {
+                            mapping.copy(
+                                favoriteUri = ""
+                            )
+                        }
+                    }.toMutableList()
+
+                favoriteMappings =
+                    favoriteMappings
+                        .groupBy { it.originalUri }
+                        .map { (_, list) ->
+                            list.last()
+                        }
+                        .toMutableList()
+
+                saveFavoriteMappings(
+                    context,
+                    favoriteMappings
+                )
+            }
         }
     }
 
@@ -631,6 +754,7 @@ fun PicRouletteApp(themeColor: Color) {
             ) {
                 val currentUri = activeSessionList.getOrNull(currentIndex.intValue)
                 if (currentUri != null) {
+
                     val currentFileName = remember(currentUri) {
                         var name = ""
                         context.contentResolver.query(
@@ -642,16 +766,33 @@ fun PicRouletteApp(themeColor: Color) {
                         )?.use { if (it.moveToFirst()) name = it.getString(0) }
                         name.ifEmpty { currentUri.lastPathSegment ?: "img" }
                     }
-                    val isHeartFilled = remember(
-                        favoriteFiles,
-                        currentFileName
+
+                    val displayFileName = remember(
+                        currentUri,
+                        isFavoritesMode,
+                        favoriteMappings
                     ) {
-                        favoriteFiles.any {
-                            scrubFileName(it.fileNameOnDisk) == scrubFileName(
-                                currentFileName
-                            )
+                        if (isFavoritesMode) {
+                            favoriteMappings.find {
+                                it.favoriteUri == currentUri.toString()
+                            }?.originalFileName
+                                ?: currentFileName
+                        } else {
+                            currentFileName
                         }
                     }
+
+                    val isHeartFilled =
+                        if (isFavoritesMode) {
+                            favoriteMappings.any {
+                                it.favoriteUri == currentUri.toString()
+                            }
+                        } else {
+                            favoriteMappings.any {
+                                it.originalUri == currentUri.toString() &&
+                                        it.favoriteUri.isNotEmpty()
+                            }
+                        }
 
                     AsyncImage(
                         model = currentUri,
@@ -748,36 +889,123 @@ fun PicRouletteApp(themeColor: Color) {
                                             val hScale = remember { Animatable(1f) }
                                             IconButton(
                                                 onClick = {
-                                                    triggerVibration(
-                                                        context,
-                                                        VibrationStyle.HEARTBEAT
-                                                    ); scope.launch {
-                                                    if (isHeartFilled) {
-                                                        val f = favoriteFiles.find {
-                                                            scrubFileName(it.fileNameOnDisk) == scrubFileName(
-                                                                currentFileName
-                                                            )
-                                                        }; f?.let {
-                                                            deleteFavorite(
-                                                                context,
-                                                                it.mediaUri
-                                                            ); refreshFavs()
+                                                    triggerVibration(context, VibrationStyle.HEARTBEAT)
+                                                    scope.launch {
+                                                        if (isHeartFilled) {
+                                                            val mapping =
+                                                                if (isFavoritesMode) {
+                                                                    favoriteMappings.find {
+                                                                        it.favoriteUri == currentUri.toString()
+                                                                    }
+                                                                } else {
+                                                                    favoriteMappings.find {
+                                                                        it.originalUri == currentUri.toString()
+                                                                    }
+                                                                }
+                                                            mapping?.let { mapToDelete ->
+
+                                                                currentOriginalUri =
+                                                                    Uri.parse(mapToDelete.originalUri)
+
+                                                                deleteFavorite(
+                                                                    context,
+                                                                    Uri.parse(mapToDelete.favoriteUri)
+                                                                )
+
+                                                                favoriteMappings =
+                                                                    favoriteMappings.map {
+                                                                        if (it.originalUri == mapToDelete.originalUri) {
+                                                                            it.copy(favoriteUri = "")
+                                                                        } else {
+                                                                            it
+                                                                        }
+                                                                    }.toMutableList()
+
+                                                                saveFavoriteMappings(
+                                                                    context,
+                                                                    favoriteMappings
+                                                                )
+
+                                                                refreshFavs()
+                                                            }
                                                         }
-                                                    } else {
+                                                        else {
                                                         hScale.animateTo(
                                                             1.4f,
                                                             spring()
                                                         ); hScale.animateTo(
                                                             1f,
                                                             spring()
-                                                        ); saveToFavoritesFolder(
-                                                            context,
-                                                            currentUri,
-                                                            currentFileName,
-                                                            scale.floatValue,
-                                                            offset.value,
-                                                            containerSize
-                                                        ); refreshFavs()
+                                                        );
+
+                                                            val sourceUri =
+                                                                if (isFavoritesMode) {
+                                                                    currentOriginalUri ?: currentUri
+                                                                } else {
+                                                                    currentUri
+                                                                }
+
+
+                                                            val favUri =
+                                                                saveToFavoritesFolder(
+                                                                    context,
+                                                                    sourceUri,
+                                                                    displayFileName,
+                                                                    scale.floatValue,
+                                                                    offset.value,
+                                                                    containerSize
+                                                                )
+
+                                                        if (favUri != null) {
+
+                                                            val existingIndex =
+                                                                favoriteMappings.indexOfFirst {
+                                                                    it.originalUri == sourceUri.toString()
+                                                                }
+
+                                                            if (existingIndex >= 0) {
+
+                                                                val updated =
+                                                                    favoriteMappings.toMutableList()
+
+                                                                updated[existingIndex] =
+                                                                    updated[existingIndex].copy(
+                                                                        favoriteUri = favUri.toString(),
+                                                                        dateAdded = System.currentTimeMillis()
+                                                                    )
+
+                                                                favoriteMappings = updated
+
+                                                            } else {
+
+                                                                val updated =
+                                                                    favoriteMappings.toMutableList()
+
+                                                                updated.add(
+                                                                    FavoriteMapping(
+                                                                        originalUri = sourceUri.toString(),
+                                                                        favoriteUri = favUri.toString(),
+                                                                        originalFileName = displayFileName,
+                                                                        dateAdded = System.currentTimeMillis()
+                                                                    )
+                                                                )
+
+                                                                favoriteMappings = updated
+                                                            }
+
+                                                            saveFavoriteMappings(
+                                                                context,
+                                                                favoriteMappings
+                                                            )
+
+                                                            if (isFavoritesMode) {
+                                                                activeSessionList[currentIndex.intValue] = favUri
+                                                            }
+
+                                                            refreshFavs()
+                                                            currentOriginalUri = null
+
+                                                        }
                                                     }
                                                 }
                                                 },
