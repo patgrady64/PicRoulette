@@ -307,3 +307,12 @@ fun deleteFavorite(context: Context, uri: Uri) {
         e.printStackTrace()
     }
 }
+
+fun sameImage(uri1: Uri, uri2: Uri): Boolean {
+    return try {
+        DocumentsContract.getDocumentId(uri1) ==
+                DocumentsContract.getDocumentId(uri2)
+    } catch (e: Exception) {
+        uri1.toString() == uri2.toString()
+    }
+}

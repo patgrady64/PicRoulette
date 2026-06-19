@@ -560,8 +560,10 @@ fun PicRouletteApp(themeColor: Color) {
                             }
                         } else {
                             favoriteMappings.any {
-                                it.originalUri == currentUri.toString() &&
-                                        it.favoriteUri.isNotEmpty()
+                                sameImage(
+                                    Uri.parse(it.originalUri),
+                                    currentUri
+                                ) && it.favoriteUri.isNotEmpty()
                             }
                         }
 
@@ -666,12 +668,17 @@ fun PicRouletteApp(themeColor: Color) {
                                                             val mapping =
                                                                 if (isFavoritesMode) {
                                                                     favoriteMappings.find {
-                                                                        it.favoriteUri == currentUri.toString()
+                                                                        sameImage(
+                                                                            Uri.parse(it.originalUri),
+                                                                            currentUri
+                                                                        )
                                                                     }
                                                                 } else {
                                                                     favoriteMappings.find {
-                                                                        it.originalUri == currentUri.toString()
-                                                                    }
+                                                                        sameImage(
+                                                                            Uri.parse(it.originalUri),
+                                                                            currentUri
+                                                                        )                                                                    }
                                                                 }
                                                             mapping?.let { mapToDelete ->
 
@@ -731,7 +738,10 @@ fun PicRouletteApp(themeColor: Color) {
 
                                                                 val existingIndex =
                                                                     favoriteMappings.indexOfFirst {
-                                                                        it.originalUri == sourceUri.toString()
+                                                                        sameImage(
+                                                                            Uri.parse(it.originalUri),
+                                                                            sourceUri
+                                                                        )
                                                                     }
 
                                                                 if (existingIndex >= 0) {
