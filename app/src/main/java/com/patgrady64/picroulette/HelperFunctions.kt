@@ -11,6 +11,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -300,9 +301,25 @@ fun DashboardActionCard(title: String, subtitle: String, icon: ImageVector, colo
     }
 }
 
-fun deleteFavorite(context: Context, uri: Uri) {
+fun deleteFavorite(
+    context: Context,
+    uri: Uri?
+) {
+    if (uri == null || uri.toString().isBlank()) {
+        Log.d("PR_FAV", "Skipping delete. Invalid URI.")
+        return
+    }
+
     try {
-        context.contentResolver.delete(uri, null, null)
+        val rows = context.contentResolver.delete(
+            uri,
+            null,
+            null
+        )
+
+        Log.d("PR_FAV", "Deleted rows: $rows")
+        Log.d("PR_FAV", "Tried to delete: $uri")
+
     } catch (e: Exception) {
         e.printStackTrace()
     }

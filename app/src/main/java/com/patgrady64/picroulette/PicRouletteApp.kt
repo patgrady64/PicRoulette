@@ -1,5 +1,6 @@
 package com.patgrady64.picroulette
 
+import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -107,6 +108,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -210,41 +212,25 @@ fun PicRouletteApp(themeColor: Color) {
         }
     }
 
-    fun refreshFavs() {
-        scope.launch(Dispatchers.IO) {
-            val list = getFavoritesList(context)
+    fun refreshFavs(context: Context, onResult: (List<FavoriteFile>) -> Unit) {
+        CoroutineScope(Dispatchers.IO).launch {
+            // 1. Get physical files currently in the directory
+            val diskFiles = getFavoritesList(context)
+
+            // 2. Load current mappings from SharedPrefs
+            val currentMappings = getFavoriteMappings(context)
+
+            // 3. Clean up: Only keep mappings for files that exist on disk
+            val validMappings = currentMappings.filter { mapping ->
+                diskFiles.any { it.mediaUri.toString() == mapping.favoriteUri }
+            }
+
+            // 4. Save the cleaned-up list back to SharedPrefs
+            saveFavoriteMappings(context, validMappings.toMutableList())
+
+            // 5. Update UI with the accurate count
             withContext(Dispatchers.Main) {
-                favoriteFiles = list.toList()
-
-                val existingUris =
-                    list.map {
-                        it.mediaUri.toString()
-                    }.toSet()
-
-                favoriteMappings =
-                    favoriteMappings.map {
-                            mapping ->
-                        if (mapping.favoriteUri in existingUris) {
-                            mapping
-                        } else {
-                            mapping.copy(
-                                favoriteUri = ""
-                            )
-                        }
-                    }.toMutableList()
-
-                favoriteMappings =
-                    favoriteMappings
-                        .groupBy { it.originalUri }
-                        .map { (_, list) ->
-                            list.last()
-                        }
-                        .toMutableList()
-
-                saveFavoriteMappings(
-                    context,
-                    favoriteMappings
-                )
+                onResult(diskFiles)
             }
         }
     }
@@ -273,7 +259,9 @@ fun PicRouletteApp(themeColor: Color) {
         isScanning.value = false
     }
 
-    LaunchedEffect(Unit) { refreshFavs(); scanAllFolders() }
+    LaunchedEffect(Unit) { refreshFavs(context) { updatedList ->
+        favoriteFiles = updatedList
+    }; scanAllFolders() }
     LaunchedEffect(currentIndex.intValue) {
         scale.floatValue = 1f;
         offset.value = Offset.Zero;
@@ -303,7 +291,9 @@ fun PicRouletteApp(themeColor: Color) {
                             }
                         },
                         actions = {
-                            IconButton(onClick = { triggerVibration(context); scope.launch { scanAllFolders(); refreshFavs() } }) {
+                            IconButton(onClick = { triggerVibration(context); scope.launch { scanAllFolders(); refreshFavs(context) { updatedList ->
+                                favoriteFiles = updatedList
+                            } } }) {
                                 Icon(
                                     Icons.Rounded.Refresh,
                                     null,
@@ -665,127 +655,75 @@ fun PicRouletteApp(themeColor: Color) {
                                                     triggerVibration(context, VibrationStyle.HEARTBEAT)
                                                     scope.launch {
                                                         if (isHeartFilled) {
-                                                            val mapping =
+                                                            val mapping = if (isFavoritesMode) {
+                                                                favoriteMappings.find { it.favoriteUri == currentUri.toString() }
+                                                            } else {
+                                                                favoriteMappings.find { it.originalUri == currentUri.toString() }
+                                                            }
+
+                                                            mapping?.let { mapToDelete ->
+                                                                // 1. Physically delete
+                                                                if (mapToDelete.favoriteUri.isNotBlank()) {
+                                                                    deleteFavorite(context, Uri.parse(mapToDelete.favoriteUri))
+                                                                }
+
+                                                                // 2. Remove mapping entirely or clear URI
+                                                                favoriteMappings = favoriteMappings.filter { it.originalUri != mapToDelete.originalUri }.toMutableList()
+                                                                saveFavoriteMappings(context, favoriteMappings)
+
+                                                                // 3. Handle UI state & Navigation
                                                                 if (isFavoritesMode) {
-                                                                    favoriteMappings.find {
-                                                                        sameImage(
-                                                                            Uri.parse(it.originalUri),
-                                                                            currentUri
-                                                                        )
+                                                                    activeSessionList.remove(currentUri)
+
+                                                                    // Force a sync with the disk before exiting
+                                                                    val updatedFavs = getFavoritesList(context)
+                                                                    favoriteFiles = updatedFavs
+
+                                                                    if (activeSessionList.isEmpty()) {
+                                                                        isPlaying = false
+                                                                        return@launch
+                                                                    }
+
+                                                                    if (currentIndex.intValue >= activeSessionList.size) {
+                                                                        currentIndex.intValue = activeSessionList.lastIndex
                                                                     }
                                                                 } else {
-                                                                    favoriteMappings.find {
-                                                                        sameImage(
-                                                                            Uri.parse(it.originalUri),
-                                                                            currentUri
-                                                                        )                                                                    }
+                                                                    // Refresh list in non-fav mode to update the "heart" state
+                                                                    refreshFavs(context) { favoriteFiles = it }
                                                                 }
-                                                            mapping?.let { mapToDelete ->
-
-                                                                currentOriginalUri =
-                                                                    Uri.parse(mapToDelete.originalUri)
-
-                                                                deleteFavorite(
-                                                                    context,
-                                                                    Uri.parse(mapToDelete.favoriteUri)
-                                                                )
-
-                                                                favoriteMappings =
-                                                                    favoriteMappings.map {
-                                                                        if (it.originalUri == mapToDelete.originalUri) {
-                                                                            it.copy(favoriteUri = "")
-                                                                        } else {
-                                                                            it
-                                                                        }
-                                                                    }.toMutableList()
-
-                                                                saveFavoriteMappings(
-                                                                    context,
-                                                                    favoriteMappings
-                                                                )
-
-                                                                refreshFavs()
                                                             }
-                                                        }
-                                                        else {
-                                                            hScale.animateTo(
-                                                                1.4f,
-                                                                spring()
-                                                            ); hScale.animateTo(
-                                                                1f,
-                                                                spring()
-                                                            );
+                                                        } else {
+                                                            // --- SAVE LOGIC ---
+                                                            hScale.animateTo(1.4f, spring())
+                                                            hScale.animateTo(1f, spring())
 
-                                                            val sourceUri =
-                                                                if (isFavoritesMode) {
-                                                                    currentOriginalUri ?: currentUri
-                                                                } else {
-                                                                    currentUri
-                                                                }
-
-
-                                                            val favUri =
-                                                                saveToFavoritesFolder(
-                                                                    context,
-                                                                    sourceUri,
-                                                                    displayFileName,
-                                                                    scale.floatValue,
-                                                                    offset.value,
-                                                                    containerSize
-                                                                )
+                                                            val sourceUri = if (isFavoritesMode) (currentOriginalUri ?: currentUri) else currentUri
+                                                            val favUri = saveToFavoritesFolder(context, sourceUri, displayFileName, scale.floatValue, offset.value, containerSize)
 
                                                             if (favUri != null) {
-
-                                                                val existingIndex =
-                                                                    favoriteMappings.indexOfFirst {
-                                                                        sameImage(
-                                                                            Uri.parse(it.originalUri),
-                                                                            sourceUri
-                                                                        )
-                                                                    }
+                                                                val existingIndex = favoriteMappings.indexOfFirst { sameImage(Uri.parse(it.originalUri), sourceUri) }
+                                                                val updated = favoriteMappings.toMutableList()
 
                                                                 if (existingIndex >= 0) {
-
-                                                                    val updated =
-                                                                        favoriteMappings.toMutableList()
-
-                                                                    updated[existingIndex] =
-                                                                        updated[existingIndex].copy(
-                                                                            favoriteUri = favUri.toString(),
-                                                                            dateAdded = System.currentTimeMillis()
-                                                                        )
-
-                                                                    favoriteMappings = updated
-
-                                                                } else {
-
-                                                                    val updated =
-                                                                        favoriteMappings.toMutableList()
-
-                                                                    updated.add(
-                                                                        FavoriteMapping(
-                                                                            originalUri = sourceUri.toString(),
-                                                                            favoriteUri = favUri.toString(),
-                                                                            originalFileName = displayFileName,
-                                                                            dateAdded = System.currentTimeMillis()
-                                                                        )
+                                                                    updated[existingIndex] = updated[existingIndex].copy(
+                                                                        favoriteUri = favUri.toString(),
+                                                                        dateAdded = System.currentTimeMillis()
                                                                     )
-
-                                                                    favoriteMappings = updated
+                                                                } else {
+                                                                    updated.add(FavoriteMapping(
+                                                                        originalUri = sourceUri.toString(),
+                                                                        favoriteUri = favUri.toString(),
+                                                                        originalFileName = displayFileName,
+                                                                        dateAdded = System.currentTimeMillis()
+                                                                    ))
                                                                 }
+                                                                favoriteMappings = updated
+                                                                saveFavoriteMappings(context, favoriteMappings)
 
-                                                                saveFavoriteMappings(
-                                                                    context,
-                                                                    favoriteMappings
-                                                                )
+                                                                if (isFavoritesMode) activeSessionList[currentIndex.intValue] = favUri
 
-                                                                if (isFavoritesMode) {
-                                                                    activeSessionList[currentIndex.intValue] = favUri
-                                                                }
-
-                                                                refreshFavs()
+                                                                refreshFavs(context) { favoriteFiles = it }
                                                                 currentOriginalUri = null
-
                                                             }
                                                         }
                                                     }
