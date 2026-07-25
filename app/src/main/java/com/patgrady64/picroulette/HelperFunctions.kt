@@ -142,10 +142,40 @@ fun saveFavoriteMappings(
 
         val obj = JSONObject()
 
-        obj.put("originalUri", mapping.originalUri)
-        obj.put("favoriteUri", mapping.favoriteUri)
-        obj.put("originalFileName", mapping.originalFileName)
-        obj.put("dateAdded", mapping.dateAdded)
+        obj.put(
+            "originalUri",
+            mapping.originalUri
+        )
+
+        obj.put(
+            "favoriteUri",
+            mapping.favoriteUri
+        )
+
+        obj.put(
+            "originalFileName",
+            mapping.originalFileName
+        )
+
+        obj.put(
+            "originalRelativePath",
+            mapping.originalRelativePath
+        )
+
+        obj.put(
+            "originalSha256",
+            mapping.originalSha256
+        )
+
+        obj.put(
+            "dateAdded",
+            mapping.dateAdded
+        )
+
+        obj.put(
+            "isDeleted",
+            mapping.isDeleted
+        )
 
         array.put(obj)
     }
@@ -187,16 +217,50 @@ fun getFavoriteMappings(
             list.add(
                 FavoriteMapping(
                     originalUri =
-                        obj.getString("originalUri"),
+                        obj.optString(
+                            "originalUri",
+                            ""
+                        ),
 
                     favoriteUri =
-                        obj.getString("favoriteUri"),
+                        obj.optString(
+                            "favoriteUri",
+                            ""
+                        ),
 
                     originalFileName =
-                        obj.getString("originalFileName"),
+                        obj.optString(
+                            "originalFileName",
+                            ""
+                        ),
+
+                    /*
+                     * optString allows mappings saved by the older
+                     * version to load without crashing.
+                     */
+                    originalRelativePath =
+                        obj.optString(
+                            "originalRelativePath",
+                            ""
+                        ),
+
+                    originalSha256 =
+                        obj.optString(
+                            "originalSha256",
+                            ""
+                        ),
 
                     dateAdded =
-                        obj.getLong("dateAdded")
+                        obj.optLong(
+                            "dateAdded",
+                            0L
+                        ),
+
+                    isDeleted =
+                        obj.optBoolean(
+                            "isDeleted",
+                            false
+                        )
                 )
             )
         }

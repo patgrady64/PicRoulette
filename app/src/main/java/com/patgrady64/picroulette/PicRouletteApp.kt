@@ -108,6 +108,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
+import com.patgrady64.picroulette.utils.exportFavoritesZip
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -116,6 +117,10 @@ import kotlinx.coroutines.withContext
 import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.collections.plus
+import com.patgrady64.picroulette.utils.importFavoritesZip
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -135,7 +140,34 @@ fun PicRouletteApp(themeColor: Color) {
             getFavoriteMappings(context)
         )
     }
+    var isExportingFavorites by remember {
+        mutableStateOf(false)
+    }
+    var isImportingFavorites by remember {
+        mutableStateOf(false)
+    }
 
+    var isMigratingFavoriteLinks by remember {
+        mutableStateOf(false)
+    }
+
+    var favoriteRepairProgress by remember {
+        mutableFloatStateOf(0f)
+    }
+
+    var favoriteRepairStatus by remember {
+        mutableStateOf("")
+    }
+
+    var pendingFavoriteLinkReviews by remember {
+        mutableStateOf<List<FavoriteLinkReview>>(
+            emptyList()
+        )
+    }
+
+    var currentFavoriteLinkReviewIndex by remember {
+        mutableIntStateOf(0)
+    }
     var isPlaying by remember { mutableStateOf(false) }
     var isFavoritesMode by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -199,6 +231,18 @@ fun PicRouletteApp(themeColor: Color) {
 
     LaunchedEffect(isPlaying) {
         if (isPlaying) {
+            // Always enter the viewer with a clean fullscreen image.
+            uiVisible = false
+            showCountSetting = false
+            showMetadata = false
+            showDeleteDialog = false
+            showShuffleToast = false
+            showResolution = false
+
+            // Cancel any previous transform/resolution display state.
+            lastTransformTime = 0L
+
+            // Reset zoom and image position.
             scale.floatValue = 1f
             offset.value = Offset.Zero
         }
@@ -258,6 +302,161 @@ fun PicRouletteApp(themeColor: Color) {
         pickedFolderImages.value = allImages
         isScanning.value = false
     }
+
+    fun advanceFavoriteLinkReview() {
+        if (
+            currentFavoriteLinkReviewIndex >=
+            pendingFavoriteLinkReviews.lastIndex
+        ) {
+            pendingFavoriteLinkReviews =
+                emptyList()
+
+            currentFavoriteLinkReviewIndex = 0
+        } else {
+            currentFavoriteLinkReviewIndex++
+        }
+    }
+
+    val importFavoritesZipLauncher =
+        rememberLauncherForActivityResult(
+            contract =
+                ActivityResultContracts.OpenDocument()
+        ) { sourceZipUri ->
+
+            if (sourceZipUri == null) {
+                return@rememberLauncherForActivityResult
+            }
+
+            val existingFavoritesSnapshot =
+                favoriteFiles.toList()
+
+            val existingMappingsSnapshot =
+                favoriteMappings.toList()
+
+            val sourceImagesSnapshot =
+                pickedFolderImages.value.toList()
+
+            isImportingFavorites = true
+
+            scope.launch {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        importFavoritesZip(
+                            context = context,
+                            sourceZipUri = sourceZipUri,
+                            existingFavorites = existingFavoritesSnapshot,
+                            existingMappings = existingMappingsSnapshot,
+                            sourceImages = sourceImagesSnapshot
+                        )
+                    }
+                }
+
+                isImportingFavorites = false
+
+                result.onSuccess { importResult ->
+
+                    favoriteMappings =
+                        importResult.updatedMappings
+
+                    saveFavoriteMappings(
+                        context,
+                        favoriteMappings
+                    )
+
+                    pendingFavoriteLinkReviews =
+                        importResult.reviews
+
+                    currentFavoriteLinkReviewIndex = 0
+
+                    /*
+                     * Refresh the physical files and dashboard count after the
+                     * restored mappings have been saved.
+                     */
+                    refreshFavs(context) { updatedFavorites ->
+                        favoriteFiles = updatedFavorites
+                    }
+
+                    showSheet = false
+
+                    val sizeMb =
+                        importResult.importedBytes /
+                                1024.0 /
+                                1024.0
+
+                    val message = buildString {
+                        append(
+                            "${importResult.importedCount} favorites imported"
+                        )
+
+                        append(
+                            " • %.1f MB".format(sizeMb)
+                        )
+
+                        if (importResult.skippedDuplicateCount > 0) {
+                            append(
+                                " • ${importResult.skippedDuplicateCount} already present"
+                            )
+                        }
+
+                        if (importResult.restoredLinkCount > 0) {
+                            append(
+                                " • ${importResult.restoredLinkCount} links restored"
+                            )
+                        }
+
+                        if (importResult.existingLinkCount > 0) {
+                            append(
+                                " • ${importResult.existingLinkCount} links already present"
+                            )
+                        }
+
+                        if (importResult.reviews.isNotEmpty()) {
+                            append(
+                                " • ${importResult.reviews.size} need review"
+                            )
+                        }
+
+                        if (importResult.unresolvedLinkCount > 0) {
+                            append(
+                                " • ${importResult.unresolvedLinkCount} originals not found"
+                            )
+                        }
+
+                        if (importResult.failedCount > 0) {
+                            append(
+                                " • ${importResult.failedCount} failed"
+                            )
+                        }
+
+                        if (
+                            !importResult.containsSourceLinks ||
+                            importResult.missingSourceMetadataCount > 0
+                        ) {
+                            append(
+                                " • Repair can check older links"
+                            )
+                        }
+                    }
+
+                    android.widget.Toast.makeText(
+                        context,
+                        message,
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+
+                result.onFailure { exception ->
+                    exception.printStackTrace()
+
+                    android.widget.Toast.makeText(
+                        context,
+                        exception.message
+                            ?: "Favorites import failed",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
 
     LaunchedEffect(Unit) { refreshFavs(context) { updatedList ->
         favoriteFiles = updatedList
@@ -485,8 +684,412 @@ fun PicRouletteApp(themeColor: Color) {
                         ) {
                             Text("Add Folder")
                         }
+
+                        val exportFavoritesZipLauncher =
+                            rememberLauncherForActivityResult(
+                                contract = ActivityResultContracts.CreateDocument(
+                                    "application/zip"
+                                )
+                            ) { destinationUri ->
+
+                                if (destinationUri == null) {
+                                    return@rememberLauncherForActivityResult
+                                }
+
+                                /*
+                                 * Capture a regular list before entering the background thread.
+                                 */
+                                val favoritesSnapshot =
+                                    favoriteFiles.toList()
+
+                                val mappingsSnapshot =
+                                    favoriteMappings.toList()
+
+                                isExportingFavorites = true
+
+                                scope.launch {
+                                    val result = runCatching {
+                                        withContext(Dispatchers.IO) {
+                                            exportFavoritesZip(
+                                                context = context,
+                                                destinationUri = destinationUri,
+                                                favorites = favoritesSnapshot,
+                                                mappings = mappingsSnapshot
+                                            )
+                                        }
+                                    }
+
+                                    isExportingFavorites = false
+
+                                    result.onSuccess { exportResult ->
+
+                                        val sizeMb =
+                                            exportResult.sourceBytesCopied /
+                                                    1024.0 /
+                                                    1024.0
+
+                                        val message = buildString {
+                                            append(
+                                                "${exportResult.exportedCount} favorites backed up"
+                                            )
+
+                                            append(
+                                                " • %.1f MB".format(sizeMb)
+                                            )
+
+                                            if (exportResult.failedCount > 0) {
+                                                append(
+                                                    " • ${exportResult.failedCount} failed"
+                                                )
+                                            }
+                                        }
+
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            message,
+                                            android.widget.Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+
+                                    result.onFailure { exception ->
+                                        exception.printStackTrace()
+
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "Favorites backup failed",
+                                            android.widget.Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            }
+
+                        Spacer(
+                            modifier = Modifier.height(20.dp)
+                        )
+
+                        Text(
+                            text = "Favorites Backup",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(
+                            modifier = Modifier.height(10.dp)
+                        )
+
+                        Button(
+                            onClick = {
+                                if (
+                                    favoriteFiles.isNotEmpty() &&
+                                    !isExportingFavorites
+                                ) {
+                                    val timestamp =
+                                        SimpleDateFormat(
+                                            "yyyyMMddHHmmss",
+                                            Locale.US
+                                        ).format(Date())
+
+                                    exportFavoritesZipLauncher.launch(
+                                        "PicRoulette-Favorites-Backup-$timestamp.zip"
+                                    )
+                                }
+                            },
+                            enabled =
+                                favoriteFiles.isNotEmpty() &&
+                                        !isExportingFavorites,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (isExportingFavorites) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+
+                                Spacer(
+                                    modifier = Modifier.width(10.dp)
+                                )
+
+                                Text("Creating Backup…")
+                            } else {
+                                Text(
+                                    "Export ${favoriteFiles.size} Favorites"
+                                )
+                            }
+                        }
+
+                        Spacer(
+                            modifier = Modifier.height(12.dp)
+                        )
+
+                        Button(
+                            onClick = {
+                                if (
+                                    !isImportingFavorites &&
+                                    !isExportingFavorites
+                                ) {
+                                    importFavoritesZipLauncher.launch(
+                                        arrayOf(
+                                            "application/zip",
+                                            "application/x-zip-compressed",
+                                            "application/octet-stream"
+                                        )
+                                    )
+                                }
+                            },
+                            enabled =
+                                !isImportingFavorites &&
+                                        !isExportingFavorites,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (isImportingFavorites) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+
+                                Spacer(
+                                    modifier = Modifier.width(10.dp)
+                                )
+
+                                Text("Importing Favorites…")
+                            } else {
+                                Text("Import Favorites Backup")
+                            }
+                        }
+
+                        Spacer(
+                            modifier = Modifier.height(12.dp)
+                        )
+
+                        Button(
+                            onClick = {
+                                if (
+                                    !isMigratingFavoriteLinks &&
+                                    !isImportingFavorites &&
+                                    !isScanning.value
+                                ) {
+                                    val favoritesSnapshot =
+                                        favoriteFiles.toList()
+
+                                    val sourceImagesSnapshot =
+                                        pickedFolderImages
+                                            .value
+                                            .toList()
+
+                                    val mappingsSnapshot =
+                                        favoriteMappings.toList()
+
+                                    isMigratingFavoriteLinks = true
+                                    favoriteRepairProgress = 0f
+                                    favoriteRepairStatus =
+                                        "Upgrading Saved Links"
+
+                                    scope.launch {
+
+                                        /*
+                                         * Phase 1:
+                                         * Upgrade mappings that already exist.
+                                         */
+                                        val firstBackfill =
+                                            backfillFavoriteMappingMetadata(
+                                                context = context,
+                                                mappings = mappingsSnapshot
+                                            ) { completed, total ->
+
+                                                withContext(
+                                                    Dispatchers.Main
+                                                ) {
+                                                    favoriteRepairStatus =
+                                                        "Upgrading Saved Links"
+
+                                                    favoriteRepairProgress =
+                                                        if (total == 0) {
+                                                            1f
+                                                        } else {
+                                                            completed.toFloat() /
+                                                                    total.toFloat()
+                                                        }
+                                                }
+                                            }
+
+                                        favoriteMappings =
+                                            firstBackfill.updatedMappings
+
+                                        /*
+                                         * Phase 2:
+                                         * Find any favorite copies that still do not
+                                         * have an original-photo mapping.
+                                         */
+                                        favoriteRepairStatus =
+                                            "Finding Original Photos"
+
+                                        favoriteRepairProgress = 0f
+
+                                        val migrationResult =
+                                            withContext(
+                                                Dispatchers.Default
+                                            ) {
+                                                migrateExistingFavoriteLinks(
+                                                    favoriteFiles =
+                                                        favoritesSnapshot,
+
+                                                    sourceImages =
+                                                        sourceImagesSnapshot,
+
+                                                    existingMappings =
+                                                        firstBackfill
+                                                            .updatedMappings
+                                                )
+                                            }
+
+                                        /*
+                                         * Phase 3:
+                                         * Add hashes to any mappings that were created
+                                         * automatically during Phase 2.
+                                         */
+                                        favoriteRepairStatus =
+                                            "Finishing New Links"
+
+                                        favoriteRepairProgress = 0f
+
+                                        val finalBackfill =
+                                            backfillFavoriteMappingMetadata(
+                                                context = context,
+
+                                                mappings =
+                                                    migrationResult
+                                                        .updatedMappings
+                                            ) { completed, total ->
+
+                                                withContext(
+                                                    Dispatchers.Main
+                                                ) {
+                                                    favoriteRepairStatus =
+                                                        "Finishing New Links"
+
+                                                    favoriteRepairProgress =
+                                                        if (total == 0) {
+                                                            1f
+                                                        } else {
+                                                            completed.toFloat() /
+                                                                    total.toFloat()
+                                                        }
+                                                }
+                                            }
+
+                                        favoriteMappings =
+                                            finalBackfill.updatedMappings
+
+                                        saveFavoriteMappings(
+                                            context,
+                                            favoriteMappings
+                                        )
+
+                                        pendingFavoriteLinkReviews =
+                                            migrationResult.reviews
+
+                                        currentFavoriteLinkReviewIndex = 0
+
+                                        isMigratingFavoriteLinks = false
+                                        favoriteRepairProgress = 0f
+                                        favoriteRepairStatus = ""
+
+                                        showSheet = false
+
+                                        val upgradedCount =
+                                            firstBackfill.updatedCount +
+                                                    finalBackfill.updatedCount
+
+                                        val hashFailureCount =
+                                            finalBackfill.hashFailureCount
+
+                                        val message = buildString {
+                                            append(
+                                                "$upgradedCount links upgraded"
+                                            )
+
+                                            append(
+                                                " • ${migrationResult.automaticallyLinked} linked automatically"
+                                            )
+
+                                            append(
+                                                " • ${migrationResult.reviews.size} need review"
+                                            )
+
+                                            if (
+                                                migrationResult.noMatchCount > 0
+                                            ) {
+                                                append(
+                                                    " • ${migrationResult.noMatchCount} not found"
+                                                )
+                                            }
+
+                                            if (hashFailureCount > 0) {
+                                                append(
+                                                    " • $hashFailureCount hashes unavailable"
+                                                )
+                                            }
+                                        }
+
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            message,
+                                            android.widget.Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                            },
+                            enabled =
+                                !isMigratingFavoriteLinks &&
+                                        !isImportingFavorites &&
+                                        !isScanning.value &&
+                                        favoriteFiles.isNotEmpty() &&
+                                        pickedFolderImages.value.isNotEmpty(),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (isMigratingFavoriteLinks) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp
+                                )
+
+                                Spacer(
+                                    modifier = Modifier.width(10.dp)
+                                )
+
+                                val progressPercent =
+                                    (favoriteRepairProgress * 100)
+                                        .toInt()
+                                        .coerceIn(0, 100)
+
+                                Text(
+                                    text = if (
+                                        favoriteRepairProgress > 0f
+                                    ) {
+                                        "$favoriteRepairStatus $progressPercent%"
+                                    } else {
+                                        "$favoriteRepairStatus…"
+                                    }
+                                )
+                            } else {
+                                Text("Repair Favorite Links")
+                            }
+                        }
+
+                        Spacer(
+                            modifier = Modifier.height(12.dp)
+                        )
+
+                        Text(
+                            text = "Use Repair Favorite Links after importing an older backup or when original photos are not showing the correct heart.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+
                     }
+
                 }
+
             }
 
         } else {
@@ -698,6 +1301,14 @@ fun PicRouletteApp(themeColor: Color) {
                                                             hScale.animateTo(1f, spring())
 
                                                             val sourceUri = if (isFavoritesMode) (currentOriginalUri ?: currentUri) else currentUri
+                                                            val originalRelativePath =
+                                                                getOriginalRelativePath(sourceUri)
+
+                                                            val originalSha256 =
+                                                                calculateOriginalSha256(
+                                                                    context = context,
+                                                                    uri = sourceUri
+                                                                )
                                                             val favUri = saveToFavoritesFolder(context, sourceUri, displayFileName, scale.floatValue, offset.value, containerSize)
 
                                                             if (favUri != null) {
@@ -705,17 +1316,45 @@ fun PicRouletteApp(themeColor: Color) {
                                                                 val updated = favoriteMappings.toMutableList()
 
                                                                 if (existingIndex >= 0) {
-                                                                    updated[existingIndex] = updated[existingIndex].copy(
-                                                                        favoriteUri = favUri.toString(),
-                                                                        dateAdded = System.currentTimeMillis()
-                                                                    )
+                                                                    updated[existingIndex] =
+                                                                        updated[existingIndex].copy(
+                                                                            favoriteUri =
+                                                                                favUri.toString(),
+
+                                                                            originalFileName =
+                                                                                displayFileName,
+
+                                                                            originalRelativePath =
+                                                                                originalRelativePath,
+
+                                                                            originalSha256 =
+                                                                                originalSha256,
+
+                                                                            dateAdded =
+                                                                                System.currentTimeMillis()
+                                                                        )
                                                                 } else {
-                                                                    updated.add(FavoriteMapping(
-                                                                        originalUri = sourceUri.toString(),
-                                                                        favoriteUri = favUri.toString(),
-                                                                        originalFileName = displayFileName,
-                                                                        dateAdded = System.currentTimeMillis()
-                                                                    ))
+                                                                    updated.add(
+                                                                        FavoriteMapping(
+                                                                            originalUri =
+                                                                                sourceUri.toString(),
+
+                                                                            favoriteUri =
+                                                                                favUri.toString(),
+
+                                                                            originalFileName =
+                                                                                displayFileName,
+
+                                                                            originalRelativePath =
+                                                                                originalRelativePath,
+
+                                                                            originalSha256 =
+                                                                                originalSha256,
+
+                                                                            dateAdded =
+                                                                                System.currentTimeMillis()
+                                                                        )
+                                                                    )
                                                                 }
                                                                 favoriteMappings = updated
                                                                 saveFavoriteMappings(context, favoriteMappings)
@@ -874,5 +1513,299 @@ fun PicRouletteApp(themeColor: Color) {
                 }
             }
         }
+    }
+    val currentLinkReview =
+        pendingFavoriteLinkReviews.getOrNull(
+            currentFavoriteLinkReviewIndex
+        )
+
+    if (currentLinkReview != null) {
+
+        /*
+         * Remove candidates that may have been assigned while
+         * resolving an earlier duplicate.
+         */
+        val availableCandidates =
+            currentLinkReview.candidates.filterNot {
+                    candidate ->
+
+                favoriteMappings.any { mapping ->
+                    mapping.originalUri ==
+                            candidate.sourceUri.toString()
+                }
+            }
+
+        AlertDialog(
+            onDismissRequest = {
+                /*
+                 * Closing does not lose anything.
+                 * Rerunning Repair Favorite Links will recreate
+                 * the unresolved review queue.
+                 */
+                pendingFavoriteLinkReviews =
+                    emptyList()
+
+                currentFavoriteLinkReviewIndex = 0
+            },
+
+            title = {
+                Column {
+                    Text("Choose the Original Photo")
+
+                    Text(
+                        text =
+                            "Review ${currentFavoriteLinkReviewIndex + 1} of ${pendingFavoriteLinkReviews.size}",
+
+                        style =
+                            MaterialTheme.typography.labelMedium,
+
+                        color = Color.Gray
+                    )
+                }
+            },
+
+            text = {
+                Column {
+                    Text(
+                        text = "Saved favorite copy",
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    AsyncImage(
+                        model =
+                            currentLinkReview
+                                .favoriteFile
+                                .mediaUri,
+
+                        contentDescription =
+                            "Saved favorite preview",
+
+                        contentScale =
+                            ContentScale.Fit,
+
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(190.dp)
+                            .clip(
+                                RoundedCornerShape(16.dp)
+                            )
+                            .background(Color.Black)
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(18.dp)
+                    )
+
+                    Text(
+                        text =
+                            "Which original image created this favorite?",
+
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    if (availableCandidates.isEmpty()) {
+                        Text(
+                            text =
+                                "No unused candidates remain for this favorite.",
+
+                            color = Color.Gray
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(
+                                max = 360.dp
+                            )
+                        ) {
+                            items(
+                                items = availableCandidates,
+                                key = {
+                                        candidate ->
+                                    candidate.sourceUri.toString()
+                                }
+                            ) { candidate ->
+
+                                Surface(
+                                    onClick = {
+                                        scope.launch {
+                                            val originalSha256 =
+                                                calculateOriginalSha256(
+                                                    context = context,
+                                                    uri = candidate.sourceUri
+                                                )
+
+                                            val updatedMappings =
+                                                favoriteMappings
+                                                    .filterNot { mapping ->
+
+                                                        mapping.favoriteUri ==
+                                                                currentLinkReview
+                                                                    .favoriteFile
+                                                                    .mediaUri
+                                                                    .toString() ||
+
+                                                                mapping.originalUri ==
+                                                                candidate
+                                                                    .sourceUri
+                                                                    .toString()
+                                                    }
+                                                    .toMutableList()
+
+                                            updatedMappings.add(
+                                                FavoriteMapping(
+                                                    originalUri =
+                                                        candidate
+                                                            .sourceUri
+                                                            .toString(),
+
+                                                    favoriteUri =
+                                                        currentLinkReview
+                                                            .favoriteFile
+                                                            .mediaUri
+                                                            .toString(),
+
+                                                    originalFileName =
+                                                        candidate.fileName,
+
+                                                    originalRelativePath =
+                                                        candidate.relativePath,
+
+                                                    originalSha256 =
+                                                        originalSha256,
+
+                                                    dateAdded =
+                                                        System.currentTimeMillis()
+                                                )
+                                            )
+
+                                            favoriteMappings =
+                                                updatedMappings
+
+                                            saveFavoriteMappings(
+                                                context,
+                                                updatedMappings
+                                            )
+
+                                            advanceFavoriteLinkReview()
+                                        }
+                                    },
+
+                                    shape =
+                                        RoundedCornerShape(16.dp),
+
+                                    color =
+                                        Color.White.copy(
+                                            alpha = 0.06f
+                                        ),
+
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(
+                                            vertical = 5.dp
+                                        )
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(
+                                            10.dp
+                                        ),
+
+                                        verticalAlignment =
+                                            Alignment.CenterVertically
+                                    ) {
+                                        AsyncImage(
+                                            model =
+                                                candidate.sourceUri,
+
+                                            contentDescription =
+                                                candidate.relativePath,
+
+                                            contentScale =
+                                                ContentScale.Crop,
+
+                                            modifier = Modifier
+                                                .size(72.dp)
+                                                .clip(
+                                                    RoundedCornerShape(
+                                                        12.dp
+                                                    )
+                                                )
+                                                .background(
+                                                    Color.Black
+                                                )
+                                        )
+
+                                        Spacer(
+                                            modifier =
+                                                Modifier.width(12.dp)
+                                        )
+
+                                        Column(
+                                            modifier =
+                                                Modifier.weight(1f)
+                                        ) {
+                                            Text(
+                                                text =
+                                                    candidate.fileName,
+
+                                                fontWeight =
+                                                    FontWeight.Bold
+                                            )
+
+                                            Spacer(
+                                                modifier =
+                                                    Modifier.height(3.dp)
+                                            )
+
+                                            Text(
+                                                text =
+                                                    candidate.relativePath,
+
+                                                color = Color.Gray,
+
+                                                style =
+                                                    MaterialTheme
+                                                        .typography
+                                                        .bodySmall
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        advanceFavoriteLinkReview()
+                    }
+                ) {
+                    Text("Skip for Now")
+                }
+            },
+
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        pendingFavoriteLinkReviews =
+                            emptyList()
+
+                        currentFavoriteLinkReviewIndex =
+                            0
+                    }
+                ) {
+                    Text("Close")
+                }
+            }
+        )
     }
 }
