@@ -212,7 +212,15 @@ fun getFavoriteMappings(
     return list
 }
 
-suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: String, scale: Float, offset: Offset, containerSize: IntSize): Uri? {
+suspend fun saveToFavoritesFolder(
+    context: Context,
+    sourceUri: Uri,
+    fileName: String,
+    scale: Float,
+    offset: Offset,
+    containerSize: IntSize,
+    displayMode: PhotoDisplayMode = PhotoDisplayMode.FIT
+): Uri? {
     return withContext(Dispatchers.IO) {
         try {
             val inputStream = context.contentResolver.openInputStream(sourceUri)
@@ -244,7 +252,12 @@ suspend fun saveToFavoritesFolder(context: Context, sourceUri: Uri, fileName: St
             val viewH = containerSize.height.toFloat()
 
             // 3. Math and crop
-            val baseScale = minOf(viewW / imgW, viewH / imgH)
+            val baseScale =
+                if (displayMode == PhotoDisplayMode.FIT) {
+                    minOf(viewW / imgW, viewH / imgH)
+                } else {
+                    maxOf(viewW / imgW, viewH / imgH)
+                }
             val totalScale = baseScale * scale
             val cropW = (viewW / totalScale).coerceAtMost(imgW)
             val cropH = (viewH / totalScale).coerceAtMost(imgH)

@@ -184,11 +184,28 @@ fun PicRouletteApp(themeColor: Color) {
     var hapticFeedbackEnabled by remember {
         mutableStateOf(isHapticFeedbackEnabled(context))
     }
+    var keepScreenAwakeEnabled by remember {
+        mutableStateOf(isKeepScreenAwakeEnabled(context))
+    }
+    var showPhotoCounterByDefault by remember {
+        mutableStateOf(isPhotoCounterDefaultEnabled(context))
+    }
+    var scanLibraryOnStart by remember {
+        mutableStateOf(isScanLibraryOnStartEnabled(context))
+    }
+    var defaultPhotoDisplayMode by remember {
+        mutableStateOf(getDefaultPhotoDisplayMode(context))
+    }
+    var currentPhotoDisplayMode by remember {
+        mutableStateOf(defaultPhotoDisplayMode)
+    }
     val currentIndex = remember { mutableIntStateOf(0) }
     var uiVisible by remember { mutableStateOf(false) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
 
-    var showCountSetting by remember { mutableStateOf(false) }
+    var showCountSetting by remember {
+        mutableStateOf(showPhotoCounterByDefault)
+    }
     var showShuffleToast by remember { mutableStateOf(false) }
 
     /*
@@ -207,9 +224,16 @@ fun PicRouletteApp(themeColor: Color) {
 
     // --- Animation Logic ---
     val currentView = LocalView.current
-    DisposableEffect(isPlaying) {
-        if (isPlaying) currentView.keepScreenOn = true
-        onDispose { currentView.keepScreenOn = false }
+    DisposableEffect(
+        isPlaying,
+        keepScreenAwakeEnabled
+    ) {
+        currentView.keepScreenOn =
+            isPlaying && keepScreenAwakeEnabled
+
+        onDispose {
+            currentView.keepScreenOn = false
+        }
     }
 
     val scale = remember { mutableFloatStateOf(1f) }
@@ -234,9 +258,12 @@ fun PicRouletteApp(themeColor: Color) {
 
     LaunchedEffect(isPlaying) {
         if (isPlaying) {
+            // Start each new viewer session with the saved default mode.
+            currentPhotoDisplayMode = defaultPhotoDisplayMode
+
             // Always enter the viewer with a clean fullscreen image.
             uiVisible = false
-            showCountSetting = false
+            showCountSetting = showPhotoCounterByDefault
             showMetadata = false
             showDeleteDialog = false
             showShuffleToast = false
@@ -301,6 +328,10 @@ fun PicRouletteApp(themeColor: Color) {
             }
 
             pickedFolderImages.value = scannedImages
+            saveCachedPhotoLibrary(
+                context = context,
+                images = scannedImages
+            )
         } finally {
             isScanning.value = false
             scanPhotosFound = pickedFolderImages.value.size
@@ -697,9 +728,20 @@ fun PicRouletteApp(themeColor: Color) {
         }
     }
 
-    LaunchedEffect(Unit) { refreshFavs(context) { updatedList ->
-        favoriteFiles = updatedList
-    }; scanAllFolders() }
+    LaunchedEffect(Unit) {
+        refreshFavs(context) { updatedList ->
+            favoriteFiles = updatedList
+        }
+
+        if (scanLibraryOnStart) {
+            scanAllFolders()
+        } else {
+            val cachedImages = loadCachedPhotoLibrary(context)
+            pickedFolderImages.value = cachedImages
+            scanPhotosFound = cachedImages.size
+            scanTotalFolders = folderConfigs.size
+        }
+    }
     LaunchedEffect(currentIndex.intValue) {
         scale.floatValue = 1f;
         offset.value = Offset.Zero;
@@ -835,6 +877,12 @@ fun PicRouletteApp(themeColor: Color) {
             if (showOptionsSheet) {
                 PicRouletteOptionsSheet(
                     hapticFeedbackEnabled = hapticFeedbackEnabled,
+                    keepScreenAwakeEnabled = keepScreenAwakeEnabled,
+                    showPhotoCounterByDefault =
+                        showPhotoCounterByDefault,
+                    scanLibraryOnStart = scanLibraryOnStart,
+                    defaultPhotoDisplayMode =
+                        defaultPhotoDisplayMode,
                     favoriteCount = favoriteFiles.size,
                     themeColor = themeColor,
                     onHapticFeedbackChanged = { enabled ->
@@ -847,6 +895,34 @@ fun PicRouletteApp(themeColor: Color) {
                         if (enabled) {
                             triggerVibration(context)
                         }
+                    },
+                    onKeepScreenAwakeChanged = { enabled ->
+                        keepScreenAwakeEnabled = enabled
+                        setKeepScreenAwakeEnabled(
+                            context = context,
+                            enabled = enabled
+                        )
+                    },
+                    onPhotoCounterDefaultChanged = { enabled ->
+                        showPhotoCounterByDefault = enabled
+                        setPhotoCounterDefaultEnabled(
+                            context = context,
+                            enabled = enabled
+                        )
+                    },
+                    onScanLibraryOnStartChanged = { enabled ->
+                        scanLibraryOnStart = enabled
+                        setScanLibraryOnStartEnabled(
+                            context = context,
+                            enabled = enabled
+                        )
+                    },
+                    onDefaultPhotoDisplayModeChanged = { mode ->
+                        defaultPhotoDisplayMode = mode
+                        setDefaultPhotoDisplayMode(
+                            context = context,
+                            mode = mode
+                        )
                     },
                     onOpenBackupRestore = {
                         showOptionsSheet = false
@@ -1027,7 +1103,15 @@ fun PicRouletteApp(themeColor: Color) {
                             translationX = offset.value.x,
                             translationY = offset.value.y
                         ),
-                        contentScale = ContentScale.Fit
+                        contentScale =
+                            if (
+                                currentPhotoDisplayMode ==
+                                PhotoDisplayMode.FIT
+                            ) {
+                                ContentScale.Fit
+                            } else {
+                                ContentScale.Crop
+                            }
                     )
 
                     /*
@@ -1199,7 +1283,16 @@ fun PicRouletteApp(themeColor: Color) {
                                                                     context = context,
                                                                     uri = sourceUri
                                                                 )
-                                                            val favUri = saveToFavoritesFolder(context, sourceUri, displayFileName, scale.floatValue, offset.value, containerSize)
+                                                            val favUri = saveToFavoritesFolder(
+                                                                context = context,
+                                                                sourceUri = sourceUri,
+                                                                fileName = displayFileName,
+                                                                scale = scale.floatValue,
+                                                                offset = offset.value,
+                                                                containerSize = containerSize,
+                                                                displayMode =
+                                                                    currentPhotoDisplayMode
+                                                            )
 
                                                             if (favUri != null) {
                                                                 val existingIndex = favoriteMappings.indexOfFirst { sameImage(Uri.parse(it.originalUri), sourceUri) }
@@ -1276,6 +1369,70 @@ fun PicRouletteApp(themeColor: Color) {
                                             )
                                         }
                                     }
+
+                                    Surface(
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(bottom = 24.dp),
+                                        shape = RoundedCornerShape(18.dp),
+                                        color = Color.Black.copy(alpha = 0.68f),
+                                        shadowElevation = 8.dp
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(4.dp),
+                                            horizontalArrangement =
+                                                Arrangement.spacedBy(4.dp),
+                                            verticalAlignment =
+                                                Alignment.CenterVertically
+                                        ) {
+                                            ViewerDisplayModeChoice(
+                                                title = "Fit",
+                                                selected =
+                                                    currentPhotoDisplayMode ==
+                                                        PhotoDisplayMode.FIT,
+                                                themeColor = themeColor,
+                                                onClick = {
+                                                    if (
+                                                        currentPhotoDisplayMode !=
+                                                        PhotoDisplayMode.FIT
+                                                    ) {
+                                                        triggerVibration(
+                                                            context,
+                                                            VibrationStyle.TICK
+                                                        )
+                                                        currentPhotoDisplayMode =
+                                                            PhotoDisplayMode.FIT
+                                                        scale.floatValue = 1f
+                                                        offset.value = Offset.Zero
+                                                    }
+                                                }
+                                            )
+
+                                            ViewerDisplayModeChoice(
+                                                title = "Fill",
+                                                selected =
+                                                    currentPhotoDisplayMode ==
+                                                        PhotoDisplayMode.FILL,
+                                                themeColor = themeColor,
+                                                onClick = {
+                                                    if (
+                                                        currentPhotoDisplayMode !=
+                                                        PhotoDisplayMode.FILL
+                                                    ) {
+                                                        triggerVibration(
+                                                            context,
+                                                            VibrationStyle.TICK
+                                                        )
+                                                        currentPhotoDisplayMode =
+                                                            PhotoDisplayMode.FILL
+                                                        scale.floatValue = 1f
+                                                        offset.value = Offset.Zero
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+
                                     IconButton(
                                         onClick = {
                                             showCountSetting = !showCountSetting; triggerVibration(
@@ -1699,3 +1856,37 @@ fun PicRouletteApp(themeColor: Color) {
         )
     }
 }
+
+@Composable
+private fun ViewerDisplayModeChoice(
+    title: String,
+    selected: Boolean,
+    themeColor: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) {
+            themeColor
+        } else {
+            Color.Transparent
+        },
+        modifier = Modifier
+            .width(72.dp)
+            .height(42.dp)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (selected) "✓ $title" else title,
+                color = if (selected) Color.Black else Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
+            )
+        }
+    }
+}
+

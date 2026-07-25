@@ -165,7 +165,7 @@ fun PicRouletteHomeScreen(
         item {
             HomeMenuRow(
                 title = "Options",
-                subtitle = "Haptic feedback, backup, and restore",
+                subtitle = "Viewer, scanning, haptics, backup, and restore",
                 icon = Icons.Rounded.Settings,
                 accentColor = Color(0xFFB79CFF),
                 onClick = onOpenOptions
