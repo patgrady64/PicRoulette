@@ -30,6 +30,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -173,6 +175,7 @@ fun PicRouletteApp(themeColor: Color) {
     var showDeleteDialog by remember { mutableStateOf(false) }
     val isScanning = remember { mutableStateOf(false) }
     var showSheet by remember { mutableStateOf(false) }
+    var showAboutSupport by remember { mutableStateOf(false) }
     val currentIndex = remember { mutableIntStateOf(0) }
     var uiVisible by remember { mutableStateOf(false) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
@@ -509,7 +512,12 @@ fun PicRouletteApp(themeColor: Color) {
                             }
                         }
                     )
-                    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 24.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
                         Spacer(Modifier.height(24.dp))
                         Box(
                             modifier = Modifier
@@ -612,6 +620,17 @@ fun PicRouletteApp(themeColor: Color) {
                                 ); currentIndex.intValue = 0; isPlaying = true
                             }
                         }
+                        Spacer(Modifier.height(16.dp))
+                        DashboardActionCard(
+                            "More",
+                            "About, links & support",
+                            Icons.Rounded.Info,
+                            Color(0xFF03DAC6)
+                        ) {
+                            triggerVibration(context)
+                            showAboutSupport = true
+                        }
+                        Spacer(Modifier.height(28.dp))
                     }
                 }
             }
@@ -1098,6 +1117,15 @@ fun PicRouletteApp(themeColor: Color) {
 
                 }
 
+            }
+
+            if (showAboutSupport) {
+                AboutSupportSheet(
+                    themeColor = themeColor,
+                    onDismiss = {
+                        showAboutSupport = false
+                    }
+                )
             }
 
         } else {
