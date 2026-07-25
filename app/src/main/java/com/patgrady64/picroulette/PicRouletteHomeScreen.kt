@@ -22,6 +22,7 @@ import androidx.compose.material.icons.rounded.FolderCopy
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -62,7 +63,8 @@ fun PicRouletteHomeScreen(
     onStartRoulette: () -> Unit,
     onOpenFavorites: () -> Unit,
     onOpenFolders: () -> Unit,
-    onOpenMore: () -> Unit,
+    onOpenOptions: () -> Unit,
+    onOpenAboutSupport: () -> Unit,
     onRefresh: () -> Unit
 ) {
     LazyColumn(
@@ -152,19 +154,31 @@ fun PicRouletteHomeScreen(
         }
 
         item {
-            HomeMoreRow(
-                onClick = onOpenMore
+            Text(
+                text = "App",
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
             )
         }
 
         item {
-            Text(
-                text = "PicRoulette scans your selected folders locally. Your photos are never uploaded.",
-                color = MutedText.copy(alpha = 0.72f),
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 2.dp)
+            HomeMenuRow(
+                title = "Options",
+                subtitle = "Haptic feedback, backup, and restore",
+                icon = Icons.Rounded.Settings,
+                accentColor = Color(0xFFB79CFF),
+                onClick = onOpenOptions
+            )
+        }
+
+        item {
+            HomeMenuRow(
+                title = "About & Support",
+                subtitle = "Developer bio, links, app info, and support",
+                icon = Icons.Rounded.Info,
+                accentColor = Color(0xFF55D6C2),
+                onClick = onOpenAboutSupport
             )
         }
     }
@@ -504,7 +518,11 @@ private fun HomeActionTile(
 }
 
 @Composable
-private fun HomeMoreRow(
+private fun HomeMenuRow(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    accentColor: Color,
     onClick: () -> Unit
 ) {
     Surface(
@@ -521,13 +539,13 @@ private fun HomeMoreRow(
                 modifier = Modifier
                     .size(42.dp)
                     .clip(RoundedCornerShape(13.dp))
-                    .background(Color(0xFF55D6C2).copy(alpha = 0.14f)),
+                    .background(accentColor.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Rounded.Info,
+                    imageVector = icon,
                     contentDescription = null,
-                    tint = Color(0xFF55D6C2),
+                    tint = accentColor,
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -536,14 +554,14 @@ private fun HomeMoreRow(
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "About & Support",
+                    text = title,
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleSmall
                 )
 
                 Text(
-                    text = "Developer bio, links, app info, and support",
+                    text = subtitle,
                     color = MutedText,
                     style = MaterialTheme.typography.bodySmall
                 )

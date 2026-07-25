@@ -178,9 +178,12 @@ fun PicRouletteApp(themeColor: Color) {
     var scanTotalFolders by remember { mutableIntStateOf(0) }
     var scanCurrentFolder by remember { mutableStateOf("") }
     var showFoldersSheet by remember { mutableStateOf(false) }
-    var showMoreSheet by remember { mutableStateOf(false) }
+    var showOptionsSheet by remember { mutableStateOf(false) }
     var showBackupRestore by remember { mutableStateOf(false) }
     var showAboutSupport by remember { mutableStateOf(false) }
+    var hapticFeedbackEnabled by remember {
+        mutableStateOf(isHapticFeedbackEnabled(context))
+    }
     val currentIndex = remember { mutableIntStateOf(0) }
     var uiVisible by remember { mutableStateOf(false) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
@@ -757,9 +760,13 @@ fun PicRouletteApp(themeColor: Color) {
                     triggerVibration(context)
                     showFoldersSheet = true
                 },
-                onOpenMore = {
+                onOpenOptions = {
                     triggerVibration(context)
-                    showMoreSheet = true
+                    showOptionsSheet = true
+                },
+                onOpenAboutSupport = {
+                    triggerVibration(context)
+                    showAboutSupport = true
                 },
                 onRefresh = {
                     triggerVibration(context)
@@ -825,20 +832,28 @@ fun PicRouletteApp(themeColor: Color) {
                 )
             }
 
-            if (showMoreSheet) {
-                PicRouletteMoreSheet(
+            if (showOptionsSheet) {
+                PicRouletteOptionsSheet(
+                    hapticFeedbackEnabled = hapticFeedbackEnabled,
                     favoriteCount = favoriteFiles.size,
                     themeColor = themeColor,
-                    onDismiss = {
-                        showMoreSheet = false
+                    onHapticFeedbackChanged = { enabled ->
+                        hapticFeedbackEnabled = enabled
+                        setHapticFeedbackEnabled(
+                            context = context,
+                            enabled = enabled
+                        )
+
+                        if (enabled) {
+                            triggerVibration(context)
+                        }
                     },
                     onOpenBackupRestore = {
-                        showMoreSheet = false
+                        showOptionsSheet = false
                         showBackupRestore = true
                     },
-                    onOpenAboutSupport = {
-                        showMoreSheet = false
-                        showAboutSupport = true
+                    onDismiss = {
+                        showOptionsSheet = false
                     }
                 )
             }

@@ -70,6 +70,10 @@ fun getSavedFolders(context: Context): List<FolderConfig> {
 }
 
 fun triggerVibration(context: Context, style: VibrationStyle = VibrationStyle.TICK) {
+    if (!isHapticFeedbackEnabled(context)) {
+        return
+    }
+
     val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         val effect = when(style) {
@@ -142,40 +146,10 @@ fun saveFavoriteMappings(
 
         val obj = JSONObject()
 
-        obj.put(
-            "originalUri",
-            mapping.originalUri
-        )
-
-        obj.put(
-            "favoriteUri",
-            mapping.favoriteUri
-        )
-
-        obj.put(
-            "originalFileName",
-            mapping.originalFileName
-        )
-
-        obj.put(
-            "originalRelativePath",
-            mapping.originalRelativePath
-        )
-
-        obj.put(
-            "originalSha256",
-            mapping.originalSha256
-        )
-
-        obj.put(
-            "dateAdded",
-            mapping.dateAdded
-        )
-
-        obj.put(
-            "isDeleted",
-            mapping.isDeleted
-        )
+        obj.put("originalUri", mapping.originalUri)
+        obj.put("favoriteUri", mapping.favoriteUri)
+        obj.put("originalFileName", mapping.originalFileName)
+        obj.put("dateAdded", mapping.dateAdded)
 
         array.put(obj)
     }
@@ -217,50 +191,16 @@ fun getFavoriteMappings(
             list.add(
                 FavoriteMapping(
                     originalUri =
-                        obj.optString(
-                            "originalUri",
-                            ""
-                        ),
+                        obj.getString("originalUri"),
 
                     favoriteUri =
-                        obj.optString(
-                            "favoriteUri",
-                            ""
-                        ),
+                        obj.getString("favoriteUri"),
 
                     originalFileName =
-                        obj.optString(
-                            "originalFileName",
-                            ""
-                        ),
-
-                    /*
-                     * optString allows mappings saved by the older
-                     * version to load without crashing.
-                     */
-                    originalRelativePath =
-                        obj.optString(
-                            "originalRelativePath",
-                            ""
-                        ),
-
-                    originalSha256 =
-                        obj.optString(
-                            "originalSha256",
-                            ""
-                        ),
+                        obj.getString("originalFileName"),
 
                     dateAdded =
-                        obj.optLong(
-                            "dateAdded",
-                            0L
-                        ),
-
-                    isDeleted =
-                        obj.optBoolean(
-                            "isDeleted",
-                            false
-                        )
+                        obj.getLong("dateAdded")
                 )
             )
         }
