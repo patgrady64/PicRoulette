@@ -134,7 +134,6 @@ fun PicRouletteApp(themeColor: Color) {
     // --- State ---
     var folderConfigs by remember { mutableStateOf(getSavedFolders(context)) }
     val pickedFolderImages = remember { mutableStateOf<List<Uri>>(emptyList()) }
-    val scanningUris = remember { mutableStateListOf<Uri>() }
     val activeSessionList = remember { mutableStateListOf<Uri>() }
     var favoriteFiles by remember { mutableStateOf<List<FavoriteFile>>(emptyList()) }
     var favoriteMappings by remember {
@@ -174,7 +173,13 @@ fun PicRouletteApp(themeColor: Color) {
     var isFavoritesMode by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     val isScanning = remember { mutableStateOf(false) }
-    var showSheet by remember { mutableStateOf(false) }
+    var scanPhotosFound by remember { mutableIntStateOf(0) }
+    var scanFoldersCompleted by remember { mutableIntStateOf(0) }
+    var scanTotalFolders by remember { mutableIntStateOf(0) }
+    var scanCurrentFolder by remember { mutableStateOf("") }
+    var showFoldersSheet by remember { mutableStateOf(false) }
+    var showMoreSheet by remember { mutableStateOf(false) }
+    var showBackupRestore by remember { mutableStateOf(false) }
     var showAboutSupport by remember { mutableStateOf(false) }
     val currentIndex = remember { mutableIntStateOf(0) }
     var uiVisible by remember { mutableStateOf(false) }
@@ -198,22 +203,6 @@ fun PicRouletteApp(themeColor: Color) {
     }
 
     // --- Animation Logic ---
-    val scanProgress by animateFloatAsState(
-        targetValue = if (!isScanning.value) 1f
-        else if (folderConfigs.isEmpty()) 0f
-        else (folderConfigs.size - scanningUris.size).toFloat() / folderConfigs.size.toFloat(),
-        animationSpec = spring(stiffness = Spring.StiffnessLow),
-        label = "scanProgress"
-    )
-
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.4f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), RepeatMode.Reverse),
-        label = "pulse"
-    )
-
     val currentView = LocalView.current
     DisposableEffect(isPlaying) {
         if (isPlaying) currentView.keepScreenOn = true
@@ -292,26 +281,28 @@ fun PicRouletteApp(themeColor: Color) {
 
     val scanAllFolders: suspend () -> Unit = {
         isScanning.value = true
-        scanningUris.clear()
-        scanningUris.addAll(folderConfigs.map { it.uri })
-        val allImages = mutableListOf<Uri>()
-        withContext(Dispatchers.IO) {
-            folderConfigs.forEach { config ->
-                delay(200)
-                try {
-                    context.contentResolver.takePersistableUriPermission(
-                        config.uri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    )
-                    val images = queryImagesInFolder(context, config)
-                    allImages.addAll(images)
-                } catch (e: Exception) {
-                }
-                scanningUris.remove(config.uri)
+        scanPhotosFound = 0
+        scanFoldersCompleted = 0
+        scanTotalFolders = folderConfigs.size
+        scanCurrentFolder = ""
+
+        try {
+            val scannedImages = scanPhotoLibrary(
+                context = context,
+                folders = folderConfigs
+            ) { progress ->
+                scanPhotosFound = progress.photosFound
+                scanFoldersCompleted = progress.foldersCompleted
+                scanTotalFolders = progress.totalFolders
+                scanCurrentFolder = progress.currentFolderName
             }
+
+            pickedFolderImages.value = scannedImages
+        } finally {
+            isScanning.value = false
+            scanPhotosFound = pickedFolderImages.value.size
+            scanFoldersCompleted = scanTotalFolders
         }
-        pickedFolderImages.value = allImages
-        isScanning.value = false
     }
 
     fun advanceFavoriteLinkReview() {
@@ -387,7 +378,7 @@ fun PicRouletteApp(themeColor: Color) {
                         favoriteFiles = updatedFavorites
                     }
 
-                    showSheet = false
+                    showBackupRestore = false
 
                     val sizeMb =
                         importResult.importedBytes /
@@ -469,6 +460,240 @@ fun PicRouletteApp(themeColor: Color) {
             }
         }
 
+
+    val folderLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocumentTree()
+        ) { uri: Uri? ->
+            uri?.let { selectedUri ->
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        selectedUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+
+                if (folderConfigs.none { it.uri == selectedUri }) {
+                    folderConfigs = folderConfigs +
+                            FolderConfig(
+                                uri = selectedUri,
+                                includeSubfolders = true
+                            )
+
+                    saveFolders(context, folderConfigs)
+                }
+
+                showFoldersSheet = false
+
+                scope.launch {
+                    scanAllFolders()
+                }
+            }
+        }
+
+    val exportFavoritesZipLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.CreateDocument(
+                "application/zip"
+            )
+        ) { destinationUri ->
+            if (destinationUri == null) {
+                return@rememberLauncherForActivityResult
+            }
+
+            val favoritesSnapshot = favoriteFiles.toList()
+            val mappingsSnapshot = favoriteMappings.toList()
+
+            isExportingFavorites = true
+
+            scope.launch {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        exportFavoritesZip(
+                            context = context,
+                            destinationUri = destinationUri,
+                            favorites = favoritesSnapshot,
+                            mappings = mappingsSnapshot
+                        )
+                    }
+                }
+
+                isExportingFavorites = false
+
+                result.onSuccess { exportResult ->
+                    val sizeMb =
+                        exportResult.sourceBytesCopied /
+                                1024.0 /
+                                1024.0
+
+                    val message = buildString {
+                        append(
+                            "${exportResult.exportedCount} favorites backed up"
+                        )
+                        append(" • %.1f MB".format(sizeMb))
+
+                        if (exportResult.failedCount > 0) {
+                            append(
+                                " • ${exportResult.failedCount} failed"
+                            )
+                        }
+                    }
+
+                    android.widget.Toast.makeText(
+                        context,
+                        message,
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+
+                result.onFailure { exception ->
+                    exception.printStackTrace()
+
+                    android.widget.Toast.makeText(
+                        context,
+                        "Favorites backup failed",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+
+    val repairFavoriteLinks: () -> Unit = repair@{
+        if (
+            isMigratingFavoriteLinks ||
+            isImportingFavorites ||
+            isExportingFavorites ||
+            isScanning.value ||
+            favoriteFiles.isEmpty() ||
+            pickedFolderImages.value.isEmpty()
+        ) {
+            return@repair
+        }
+
+        val favoritesSnapshot = favoriteFiles.toList()
+        val sourceImagesSnapshot = pickedFolderImages.value.toList()
+        val mappingsSnapshot = favoriteMappings.toList()
+
+        isMigratingFavoriteLinks = true
+        favoriteRepairProgress = 0f
+        favoriteRepairStatus = "Upgrading Saved Links"
+
+        scope.launch {
+            try {
+                val firstBackfill =
+                    backfillFavoriteMappingMetadata(
+                        context = context,
+                        mappings = mappingsSnapshot
+                    ) { completed, total ->
+                        withContext(Dispatchers.Main) {
+                            favoriteRepairStatus =
+                                "Upgrading Saved Links"
+
+                            favoriteRepairProgress =
+                                if (total == 0) {
+                                    1f
+                                } else {
+                                    completed.toFloat() /
+                                            total.toFloat()
+                                }
+                        }
+                    }
+
+                favoriteMappings = firstBackfill.updatedMappings
+                favoriteRepairStatus = "Finding Original Photos"
+                favoriteRepairProgress = 0f
+
+                val migrationResult =
+                    withContext(Dispatchers.Default) {
+                        migrateExistingFavoriteLinks(
+                            favoriteFiles = favoritesSnapshot,
+                            sourceImages = sourceImagesSnapshot,
+                            existingMappings =
+                                firstBackfill.updatedMappings
+                        )
+                    }
+
+                favoriteRepairStatus = "Finishing New Links"
+                favoriteRepairProgress = 0f
+
+                val finalBackfill =
+                    backfillFavoriteMappingMetadata(
+                        context = context,
+                        mappings = migrationResult.updatedMappings
+                    ) { completed, total ->
+                        withContext(Dispatchers.Main) {
+                            favoriteRepairStatus =
+                                "Finishing New Links"
+
+                            favoriteRepairProgress =
+                                if (total == 0) {
+                                    1f
+                                } else {
+                                    completed.toFloat() /
+                                        total.toFloat()
+                                }
+                        }
+                    }
+
+                favoriteMappings = finalBackfill.updatedMappings
+                saveFavoriteMappings(context, favoriteMappings)
+
+                pendingFavoriteLinkReviews = migrationResult.reviews
+                currentFavoriteLinkReviewIndex = 0
+                showBackupRestore = false
+
+                val upgradedCount =
+                    firstBackfill.updatedCount +
+                        finalBackfill.updatedCount
+
+                val hashFailureCount =
+                    firstBackfill.hashFailureCount +
+                        finalBackfill.hashFailureCount
+
+                val message = buildString {
+                    append("$upgradedCount links upgraded")
+                    append(
+                        " • ${migrationResult.automaticallyLinked} linked automatically"
+                    )
+                    append(
+                        " • ${migrationResult.reviews.size} need review"
+                    )
+
+                    if (migrationResult.noMatchCount > 0) {
+                        append(
+                            " • ${migrationResult.noMatchCount} not found"
+                        )
+                    }
+
+                    if (hashFailureCount > 0) {
+                        append(
+                            " • $hashFailureCount hashes unavailable"
+                        )
+                    }
+                }
+
+                android.widget.Toast.makeText(
+                    context,
+                    message,
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } catch (exception: Exception) {
+                exception.printStackTrace()
+
+                android.widget.Toast.makeText(
+                    context,
+                    exception.message
+                        ?: "Favorite link repair failed",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                isMigratingFavoriteLinks = false
+                favoriteRepairProgress = 0f
+                favoriteRepairStatus = ""
+            }
+        }
+    }
+
     LaunchedEffect(Unit) { refreshFavs(context) { updatedList ->
         favoriteFiles = updatedList
     }; scanAllFolders() }
@@ -480,643 +705,197 @@ fun PicRouletteApp(themeColor: Color) {
     Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
         if (!isPlaying) {
             // --- MAIN DASHBOARD UI ---
-            Box(Modifier.padding(padding)) {
-                Column(modifier = Modifier.padding(top = 32.dp)) {
-                    CenterAlignedTopAppBar(
-                        colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                            containerColor = Color.Transparent,
-                            titleContentColor = Color.White
-                        ),
-                        title = {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    "PicRoulette",
-                                    fontWeight = FontWeight.Black,
-                                    fontSize = 32.sp
-                                ); Text(
-                                "Rediscover your library",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.Gray
-                            )
-                            }
-                        },
-                        actions = {
-                            IconButton(onClick = { triggerVibration(context); scope.launch { scanAllFolders(); refreshFavs(context) { updatedList ->
-                                favoriteFiles = updatedList
-                            } } }) {
-                                Icon(
-                                    Icons.Rounded.Refresh,
-                                    null,
-                                    tint = if (isScanning.value) themeColor else Color.White
-                                )
-                            }
-                        }
-                    )
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 24.dp)
-                            .verticalScroll(rememberScrollState())
+            PicRouletteHomeScreen(
+                modifier = Modifier.padding(padding),
+                themeColor = themeColor,
+                photoCount = pickedFolderImages.value.size,
+                favoriteCount = favoriteFiles.size,
+                folderCount = folderConfigs.size,
+                isScanning = isScanning.value,
+                scanPhotosFound = scanPhotosFound,
+                scanFoldersCompleted = scanFoldersCompleted,
+                scanTotalFolders = scanTotalFolders,
+                scanCurrentFolder = scanCurrentFolder,
+                onStartRoulette = {
+                    if (
+                        !isScanning.value &&
+                        pickedFolderImages.value.isNotEmpty()
                     ) {
-                        Spacer(Modifier.height(24.dp))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(220.dp)
-                                .clip(RoundedCornerShape(32.dp))
-                                .background(Color(0xFF050112))
-                                .onGloballyPositioned { containerSize = it.size }
-                                .clickable {
-                                    if (pickedFolderImages.value.isNotEmpty()) {
-                                        triggerVibration(
-                                            context,
-                                            VibrationStyle.LONG
-                                        ); isFavoritesMode =
-                                            false; activeSessionList.clear(); activeSessionList.addAll(
-                                            pickedFolderImages.value.shuffled()
-                                        ); currentIndex.intValue = 0; isPlaying = true
-                                    }
-                                }) {
+                        triggerVibration(
+                            context,
+                            VibrationStyle.LONG
+                        )
 
-                            Box(
-                                modifier = Modifier.fillMaxSize().background(
-                                    Brush.horizontalGradient(
-                                        0.0f to Color(0xFF7C4DFF),
-                                        scanProgress to themeColor,
-                                        scanProgress to Color.Transparent
-                                    )
-                                )
-                            )
-                            if (isScanning.value && scanProgress > 0f && scanProgress < 1f) {
-                                Box(
-                                    modifier = Modifier.fillMaxHeight().width(6.dp).graphicsLayer {
-                                        translationX =
-                                            (scanProgress * containerSize.width.toFloat()) - 3.dp.toPx()
-                                    }.background(
-                                        Brush.verticalGradient(
-                                            listOf(
-                                                Color.Transparent,
-                                                Color.White,
-                                                Color.Transparent
-                                            )
-                                        )
-                                    ).blur(2.dp)
-                                )
-                            }
-                            Icon(
-                                Icons.Rounded.PlayArrow,
-                                null,
-                                modifier = Modifier.size(240.dp).align(Alignment.CenterEnd)
-                                    .offset(x = 60.dp).graphicsLayer {
-                                        alpha = if (isScanning.value) pulseAlpha * 0.3f else 0.1f
-                                    },
-                                tint = Color.White
-                            )
-                            Column(
-                                modifier = Modifier.padding(32.dp).align(Alignment.BottomStart)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (isScanning.value) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(16.dp),
-                                            color = Color.White,
-                                            strokeWidth = 3.dp
-                                        ); Spacer(Modifier.width(12.dp))
-                                    }
-                                    Text(
-                                        text = if (isScanning.value) "INITIALIZING: ${(scanProgress * 100).toInt()}%" else "${pickedFolderImages.value.size} PHOTOS",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 12.sp,
-                                        fontFamily = FontFamily.Monospace
-                                    )
-                                }
-                                Text(
-                                    "Start Roulette",
-                                    color = Color.White,
-                                    style = MaterialTheme.typography.headlineLarge,
-                                    fontWeight = FontWeight.Black
-                                )
-                            }
+                        isFavoritesMode = false
+                        activeSessionList.clear()
+                        activeSessionList.addAll(
+                            pickedFolderImages.value.shuffled()
+                        )
+                        currentIndex.intValue = 0
+                        isPlaying = true
+                    }
+                },
+                onOpenFavorites = {
+                    if (favoriteFiles.isNotEmpty()) {
+                        triggerVibration(
+                            context,
+                            VibrationStyle.LONG
+                        )
+
+                        isFavoritesMode = true
+                        activeSessionList.clear()
+                        activeSessionList.addAll(
+                            favoriteFiles
+                                .map { it.mediaUri }
+                                .shuffled()
+                        )
+                        currentIndex.intValue = 0
+                        isPlaying = true
+                    }
+                },
+                onOpenFolders = {
+                    triggerVibration(context)
+                    showFoldersSheet = true
+                },
+                onOpenMore = {
+                    triggerVibration(context)
+                    showMoreSheet = true
+                },
+                onRefresh = {
+                    triggerVibration(context)
+
+                    scope.launch {
+                        scanAllFolders()
+                        refreshFavs(context) { updatedList ->
+                            favoriteFiles = updatedList
                         }
-                        Spacer(Modifier.height(32.dp))
-                        DashboardActionCard(
-                            "Library Folders",
-                            "${folderConfigs.size} folders",
-                            Icons.Rounded.FolderCopy,
-                            Color(0xFFBB86FC)
-                        ) { triggerVibration(context); showSheet = true }
-                        Spacer(Modifier.height(16.dp))
-                        DashboardActionCard(
-                            "Your Favorites",
-                            "${favoriteFiles.size} images",
-                            Icons.Rounded.Favorite,
-                            Color(0xFFFF4081)
-                        ) {
-                            if (favoriteFiles.isNotEmpty()) {
-                                triggerVibration(context, VibrationStyle.LONG); isFavoritesMode =
-                                    true; activeSessionList.clear(); activeSessionList.addAll(
-                                    favoriteFiles.map { it.mediaUri }.shuffled()
-                                ); currentIndex.intValue = 0; isPlaying = true
-                            }
-                        }
-                        Spacer(Modifier.height(16.dp))
-                        DashboardActionCard(
-                            "More",
-                            "About, links & support",
-                            Icons.Rounded.Info,
-                            Color(0xFF03DAC6)
-                        ) {
-                            triggerVibration(context)
-                            showAboutSupport = true
-                        }
-                        Spacer(Modifier.height(28.dp))
                     }
                 }
+            )
+
+            if (showFoldersSheet) {
+                LibraryFoldersSheet(
+                    folders = folderConfigs,
+                    isScanning = isScanning.value,
+                    photosFound = scanPhotosFound,
+                    currentFolderName = scanCurrentFolder,
+                    themeColor = themeColor,
+                    onDismiss = {
+                        showFoldersSheet = false
+                    },
+                    onAddFolder = {
+                        folderLauncher.launch(null)
+                    },
+                    onToggleSubfolders = { config, includeSubfolders ->
+                        folderConfigs = folderConfigs.map { current ->
+                            if (current == config) {
+                                current.copy(
+                                    includeSubfolders = includeSubfolders
+                                )
+                            } else {
+                                current
+                            }
+                        }
+
+                        saveFolders(context, folderConfigs)
+
+                        scope.launch {
+                            scanAllFolders()
+                        }
+                    },
+                    onRemoveFolder = { config ->
+                        folderConfigs = folderConfigs.filterNot {
+                            it == config
+                        }
+
+                        saveFolders(context, folderConfigs)
+
+                        scope.launch {
+                            scanAllFolders()
+                        }
+                    },
+                    onRescan = {
+                        scope.launch {
+                            scanAllFolders()
+                            refreshFavs(context) { updatedList ->
+                                favoriteFiles = updatedList
+                            }
+                        }
+                    }
+                )
             }
 
-            // --- FOLDER MANAGEMENT SHEET ---
-            if (showSheet) {
-                ModalBottomSheet(onDismissRequest = { showSheet = false }) {
-                    Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
-                        Text(
-                            "Library Folders",
-                            style = MaterialTheme.typography.headlineSmall,
-                            modifier = Modifier.padding(bottom = 16.dp)
-                        )
-
-                        LazyColumn(modifier = Modifier.heightIn(max = 300.dp)) {
-                            items(folderConfigs) { config ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    // --- NEW: RECURSIVE TOGGLE ---
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Checkbox(
-                                            checked = config.includeSubfolders,
-                                            onCheckedChange = { isChecked ->
-                                                // Update the specific config with the new value
-                                                folderConfigs = folderConfigs.map {
-                                                    if (it == config) it.copy(includeSubfolders = isChecked) else it
-                                                }
-                                                // Save the new state and re-scan
-                                                saveFolders(context, folderConfigs)
-                                                scope.launch { scanAllFolders() }
-                                            }
-                                        )
-                                        Text("Recursive", fontSize = 10.sp, color = Color.Gray)
-                                    }
-
-                                    Spacer(Modifier.width(8.dp))
-
-                                    Text(
-                                        text = config.uri.path?.substringAfterLast("/") ?: "Folder",
-                                        modifier = Modifier.weight(1f),
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-
-                                    // Existing trashcan button
-                                    IconButton(onClick = {
-                                        folderConfigs = folderConfigs.filter { it != config }
-                                        saveFolders(context, folderConfigs)
-                                        scope.launch { scanAllFolders() }
-                                    }) {
-                                        Icon(Icons.Rounded.DeleteOutline, "Remove", tint = Color.Red)
-                                    }
-                                }
-                            }
-                        }
-                        val folderLauncher = rememberLauncherForActivityResult(
-                            contract = ActivityResultContracts.OpenDocumentTree()
-                        ) { uri: Uri? ->
-                            uri?.let {
-                                context.contentResolver.takePersistableUriPermission(
-                                    it,
-                                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                                )
-
-                                folderConfigs = folderConfigs + FolderConfig(it, true)
-                                saveFolders(context, folderConfigs)
-                                scope.launch { scanAllFolders() }
-
-                                // FIX: Close the sheet after the folder is successfully added
-                                showSheet = false
-                            }
-                        }
-
-                        Button(
-                            onClick = { folderLauncher.launch(null) },
-                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
-                        ) {
-                            Text("Add Folder")
-                        }
-
-                        val exportFavoritesZipLauncher =
-                            rememberLauncherForActivityResult(
-                                contract = ActivityResultContracts.CreateDocument(
-                                    "application/zip"
-                                )
-                            ) { destinationUri ->
-
-                                if (destinationUri == null) {
-                                    return@rememberLauncherForActivityResult
-                                }
-
-                                /*
-                                 * Capture a regular list before entering the background thread.
-                                 */
-                                val favoritesSnapshot =
-                                    favoriteFiles.toList()
-
-                                val mappingsSnapshot =
-                                    favoriteMappings.toList()
-
-                                isExportingFavorites = true
-
-                                scope.launch {
-                                    val result = runCatching {
-                                        withContext(Dispatchers.IO) {
-                                            exportFavoritesZip(
-                                                context = context,
-                                                destinationUri = destinationUri,
-                                                favorites = favoritesSnapshot,
-                                                mappings = mappingsSnapshot
-                                            )
-                                        }
-                                    }
-
-                                    isExportingFavorites = false
-
-                                    result.onSuccess { exportResult ->
-
-                                        val sizeMb =
-                                            exportResult.sourceBytesCopied /
-                                                    1024.0 /
-                                                    1024.0
-
-                                        val message = buildString {
-                                            append(
-                                                "${exportResult.exportedCount} favorites backed up"
-                                            )
-
-                                            append(
-                                                " • %.1f MB".format(sizeMb)
-                                            )
-
-                                            if (exportResult.failedCount > 0) {
-                                                append(
-                                                    " • ${exportResult.failedCount} failed"
-                                                )
-                                            }
-                                        }
-
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            message,
-                                            android.widget.Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-
-                                    result.onFailure { exception ->
-                                        exception.printStackTrace()
-
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            "Favorites backup failed",
-                                            android.widget.Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                }
-                            }
-
-                        Spacer(
-                            modifier = Modifier.height(20.dp)
-                        )
-
-                        Text(
-                            text = "Favorites Backup",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(
-                            modifier = Modifier.height(10.dp)
-                        )
-
-                        Button(
-                            onClick = {
-                                if (
-                                    favoriteFiles.isNotEmpty() &&
-                                    !isExportingFavorites
-                                ) {
-                                    val timestamp =
-                                        SimpleDateFormat(
-                                            "yyyyMMddHHmmss",
-                                            Locale.US
-                                        ).format(Date())
-
-                                    exportFavoritesZipLauncher.launch(
-                                        "PicRoulette-Favorites-Backup-$timestamp.zip"
-                                    )
-                                }
-                            },
-                            enabled =
-                                favoriteFiles.isNotEmpty() &&
-                                        !isExportingFavorites,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            if (isExportingFavorites) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp
-                                )
-
-                                Spacer(
-                                    modifier = Modifier.width(10.dp)
-                                )
-
-                                Text("Creating Backup…")
-                            } else {
-                                Text(
-                                    "Export ${favoriteFiles.size} Favorites"
-                                )
-                            }
-                        }
-
-                        Spacer(
-                            modifier = Modifier.height(12.dp)
-                        )
-
-                        Button(
-                            onClick = {
-                                if (
-                                    !isImportingFavorites &&
-                                    !isExportingFavorites
-                                ) {
-                                    importFavoritesZipLauncher.launch(
-                                        arrayOf(
-                                            "application/zip",
-                                            "application/x-zip-compressed",
-                                            "application/octet-stream"
-                                        )
-                                    )
-                                }
-                            },
-                            enabled =
-                                !isImportingFavorites &&
-                                        !isExportingFavorites,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            if (isImportingFavorites) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp
-                                )
-
-                                Spacer(
-                                    modifier = Modifier.width(10.dp)
-                                )
-
-                                Text("Importing Favorites…")
-                            } else {
-                                Text("Import Favorites Backup")
-                            }
-                        }
-
-                        Spacer(
-                            modifier = Modifier.height(12.dp)
-                        )
-
-                        Button(
-                            onClick = {
-                                if (
-                                    !isMigratingFavoriteLinks &&
-                                    !isImportingFavorites &&
-                                    !isScanning.value
-                                ) {
-                                    val favoritesSnapshot =
-                                        favoriteFiles.toList()
-
-                                    val sourceImagesSnapshot =
-                                        pickedFolderImages
-                                            .value
-                                            .toList()
-
-                                    val mappingsSnapshot =
-                                        favoriteMappings.toList()
-
-                                    isMigratingFavoriteLinks = true
-                                    favoriteRepairProgress = 0f
-                                    favoriteRepairStatus =
-                                        "Upgrading Saved Links"
-
-                                    scope.launch {
-
-                                        /*
-                                         * Phase 1:
-                                         * Upgrade mappings that already exist.
-                                         */
-                                        val firstBackfill =
-                                            backfillFavoriteMappingMetadata(
-                                                context = context,
-                                                mappings = mappingsSnapshot
-                                            ) { completed, total ->
-
-                                                withContext(
-                                                    Dispatchers.Main
-                                                ) {
-                                                    favoriteRepairStatus =
-                                                        "Upgrading Saved Links"
-
-                                                    favoriteRepairProgress =
-                                                        if (total == 0) {
-                                                            1f
-                                                        } else {
-                                                            completed.toFloat() /
-                                                                    total.toFloat()
-                                                        }
-                                                }
-                                            }
-
-                                        favoriteMappings =
-                                            firstBackfill.updatedMappings
-
-                                        /*
-                                         * Phase 2:
-                                         * Find any favorite copies that still do not
-                                         * have an original-photo mapping.
-                                         */
-                                        favoriteRepairStatus =
-                                            "Finding Original Photos"
-
-                                        favoriteRepairProgress = 0f
-
-                                        val migrationResult =
-                                            withContext(
-                                                Dispatchers.Default
-                                            ) {
-                                                migrateExistingFavoriteLinks(
-                                                    favoriteFiles =
-                                                        favoritesSnapshot,
-
-                                                    sourceImages =
-                                                        sourceImagesSnapshot,
-
-                                                    existingMappings =
-                                                        firstBackfill
-                                                            .updatedMappings
-                                                )
-                                            }
-
-                                        /*
-                                         * Phase 3:
-                                         * Add hashes to any mappings that were created
-                                         * automatically during Phase 2.
-                                         */
-                                        favoriteRepairStatus =
-                                            "Finishing New Links"
-
-                                        favoriteRepairProgress = 0f
-
-                                        val finalBackfill =
-                                            backfillFavoriteMappingMetadata(
-                                                context = context,
-
-                                                mappings =
-                                                    migrationResult
-                                                        .updatedMappings
-                                            ) { completed, total ->
-
-                                                withContext(
-                                                    Dispatchers.Main
-                                                ) {
-                                                    favoriteRepairStatus =
-                                                        "Finishing New Links"
-
-                                                    favoriteRepairProgress =
-                                                        if (total == 0) {
-                                                            1f
-                                                        } else {
-                                                            completed.toFloat() /
-                                                                    total.toFloat()
-                                                        }
-                                                }
-                                            }
-
-                                        favoriteMappings =
-                                            finalBackfill.updatedMappings
-
-                                        saveFavoriteMappings(
-                                            context,
-                                            favoriteMappings
-                                        )
-
-                                        pendingFavoriteLinkReviews =
-                                            migrationResult.reviews
-
-                                        currentFavoriteLinkReviewIndex = 0
-
-                                        isMigratingFavoriteLinks = false
-                                        favoriteRepairProgress = 0f
-                                        favoriteRepairStatus = ""
-
-                                        showSheet = false
-
-                                        val upgradedCount =
-                                            firstBackfill.updatedCount +
-                                                    finalBackfill.updatedCount
-
-                                        val hashFailureCount =
-                                            finalBackfill.hashFailureCount
-
-                                        val message = buildString {
-                                            append(
-                                                "$upgradedCount links upgraded"
-                                            )
-
-                                            append(
-                                                " • ${migrationResult.automaticallyLinked} linked automatically"
-                                            )
-
-                                            append(
-                                                " • ${migrationResult.reviews.size} need review"
-                                            )
-
-                                            if (
-                                                migrationResult.noMatchCount > 0
-                                            ) {
-                                                append(
-                                                    " • ${migrationResult.noMatchCount} not found"
-                                                )
-                                            }
-
-                                            if (hashFailureCount > 0) {
-                                                append(
-                                                    " • $hashFailureCount hashes unavailable"
-                                                )
-                                            }
-                                        }
-
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            message,
-                                            android.widget.Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                }
-                            },
-                            enabled =
-                                !isMigratingFavoriteLinks &&
-                                        !isImportingFavorites &&
-                                        !isScanning.value &&
-                                        favoriteFiles.isNotEmpty() &&
-                                        pickedFolderImages.value.isNotEmpty(),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            if (isMigratingFavoriteLinks) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp
-                                )
-
-                                Spacer(
-                                    modifier = Modifier.width(10.dp)
-                                )
-
-                                val progressPercent =
-                                    (favoriteRepairProgress * 100)
-                                        .toInt()
-                                        .coerceIn(0, 100)
-
-                                Text(
-                                    text = if (
-                                        favoriteRepairProgress > 0f
-                                    ) {
-                                        "$favoriteRepairStatus $progressPercent%"
-                                    } else {
-                                        "$favoriteRepairStatus…"
-                                    }
-                                )
-                            } else {
-                                Text("Repair Favorite Links")
-                            }
-                        }
-
-                        Spacer(
-                            modifier = Modifier.height(12.dp)
-                        )
-
-                        Text(
-                            text = "Use Repair Favorite Links after importing an older backup or when original photos are not showing the correct heart.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
-                        )
-
+            if (showMoreSheet) {
+                PicRouletteMoreSheet(
+                    favoriteCount = favoriteFiles.size,
+                    themeColor = themeColor,
+                    onDismiss = {
+                        showMoreSheet = false
+                    },
+                    onOpenBackupRestore = {
+                        showMoreSheet = false
+                        showBackupRestore = true
+                    },
+                    onOpenAboutSupport = {
+                        showMoreSheet = false
+                        showAboutSupport = true
                     }
+                )
+            }
 
-                }
+            if (showBackupRestore) {
+                BackupRestoreSheet(
+                    favoriteCount = favoriteFiles.size,
+                    linkedFavoriteCount = favoriteMappings.count {
+                        it.originalUri.isNotBlank() &&
+                            it.favoriteUri.isNotBlank()
+                    },
+                    sourcePhotoCount = pickedFolderImages.value.size,
+                    isExporting = isExportingFavorites,
+                    isImporting = isImportingFavorites,
+                    isRepairing = isMigratingFavoriteLinks,
+                    repairProgress = favoriteRepairProgress,
+                    repairStatus = favoriteRepairStatus,
+                    isLibraryScanning = isScanning.value,
+                    themeColor = themeColor,
+                    onDismiss = {
+                        showBackupRestore = false
+                    },
+                    onExport = {
+                        if (
+                            favoriteFiles.isNotEmpty() &&
+                            !isExportingFavorites &&
+                            !isImportingFavorites &&
+                            !isMigratingFavoriteLinks
+                        ) {
+                            val timestamp =
+                                SimpleDateFormat(
+                                    "yyyyMMddHHmmss",
+                                    Locale.US
+                                ).format(Date())
 
+                            exportFavoritesZipLauncher.launch(
+                                "PicRoulette-Favorites-Backup-$timestamp.zip"
+                            )
+                        }
+                    },
+                    onImport = {
+                        if (
+                            !isImportingFavorites &&
+                            !isExportingFavorites &&
+                            !isMigratingFavoriteLinks
+                        ) {
+                            importFavoritesZipLauncher.launch(
+                                arrayOf(
+                                    "application/zip",
+                                    "application/x-zip-compressed",
+                                    "application/octet-stream"
+                                )
+                            )
+                        }
+                    },
+                    onRepair = repairFavoriteLinks
+                )
             }
 
             if (showAboutSupport) {
@@ -1243,9 +1022,9 @@ fun PicRouletteApp(themeColor: Color) {
                     AnimatedVisibility(
                         visible =
                             showFavoriteIndicator &&
-                                    !uiVisible &&
-                                    !isFavoritesMode &&
-                                    isHeartFilled,
+                            !uiVisible &&
+                            !isFavoritesMode &&
+                            isHeartFilled,
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .padding(top = 48.dp)

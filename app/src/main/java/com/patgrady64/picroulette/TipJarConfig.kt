@@ -8,4 +8,4 @@ package com.patgrady64.picroulette
  * becomes:
  * const val PAYPAL_ME_HANDLE = "PatrickGrady"
  */
-const val PAYPAL_ME_HANDLE = "iamprg"
+const val PAYPAL_ME_HANDLE = ""

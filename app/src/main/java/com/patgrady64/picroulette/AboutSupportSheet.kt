@@ -320,9 +320,9 @@ private fun TipOptionButton(
                 context = context,
                 url =
                     "https://www.paypal.me/" +
-                            paypalHandle +
-                            "/" +
-                            amountForUrl
+                        paypalHandle +
+                        "/" +
+                        amountForUrl
             )
         },
         enabled = paypalHandle.isNotBlank(),
