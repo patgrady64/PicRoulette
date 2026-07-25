@@ -180,6 +180,14 @@ fun PicRouletteApp(themeColor: Color) {
     var showCountSetting by remember { mutableStateOf(false) }
     var showShuffleToast by remember { mutableStateOf(false) }
 
+    /*
+     * Briefly shows a filled heart when an already-favorited photo
+     * appears in the normal viewer.
+     */
+    var showFavoriteIndicator by remember {
+        mutableStateOf(false)
+    }
+
     var showMetadata by remember { mutableStateOf(false) }
 
     var currentOriginalUri by remember {
@@ -1160,6 +1168,28 @@ fun PicRouletteApp(themeColor: Color) {
                             }
                         }
 
+                    /*
+                     * Each time a new normal-mode photo appears, briefly show
+                     * the filled heart when that original photo is favorited.
+                     * Changing photos automatically cancels the previous delay.
+                     */
+                    LaunchedEffect(
+                        currentUri,
+                        isHeartFilled,
+                        isFavoritesMode
+                    ) {
+                        showFavoriteIndicator = false
+
+                        if (
+                            !isFavoritesMode &&
+                            isHeartFilled
+                        ) {
+                            showFavoriteIndicator = true
+                            delay(2000)
+                            showFavoriteIndicator = false
+                        }
+                    }
+
                     AsyncImage(
                         model = currentUri,
                         contentDescription = null,
@@ -1177,6 +1207,44 @@ fun PicRouletteApp(themeColor: Color) {
                         ),
                         contentScale = ContentScale.Fit
                     )
+
+                    /*
+                     * Heart-only notification. This is separate from the full
+                     * viewer menu and is not clickable.
+                     */
+                    AnimatedVisibility(
+                        visible =
+                            showFavoriteIndicator &&
+                                    !uiVisible &&
+                                    !isFavoritesMode &&
+                                    isHeartFilled,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 48.dp)
+                            .zIndex(2f),
+                        enter = fadeIn() + scaleIn(),
+                        exit = fadeOut() + scaleOut()
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.Black.copy(alpha = 0.55f),
+                            shadowElevation = 8.dp,
+                            modifier = Modifier.size(64.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Favorite,
+                                    contentDescription =
+                                        "Already in Favorites",
+                                    tint = Color.Red,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                            }
+                        }
+                    }
 
                     if (showCountSetting) { // Now shows regardless of uiVisible state
                         Box(
