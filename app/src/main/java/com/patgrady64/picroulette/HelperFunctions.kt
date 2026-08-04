@@ -65,7 +65,9 @@ fun getSavedFolders(context: Context): List<FolderConfig> {
             val obj = array.getJSONObject(i)
             list.add(FolderConfig(Uri.parse(obj.getString("uri")), obj.getBoolean("subfolders")))
         }
-    } catch (e: Exception) {}
+    } catch (exception: Exception) {
+        Log.e("PR_STORAGE", "Could not load saved folders", exception)
+    }
     return list
 }
 
@@ -109,14 +111,20 @@ private fun scanDirectory(context: Context, treeUri: Uri, parentDocId: String, r
                 }
             }
         }
-    } catch (e: Exception) {}
+    } catch (exception: Exception) {
+        Log.e(
+            "PR_STORAGE",
+            "Could not scan folder document ID: $parentDocId",
+            exception
+        )
+    }
 }
 
 fun getFavoritesList(context: Context): List<FavoriteFile> {
     val list = mutableListOf<FavoriteFile>()
     val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME)
-    val selection = "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?"
-    val args = arrayOf("%Pictures/PR_FAVS%")
+    val selection = "${MediaStore.Images.Media.RELATIVE_PATH} = ?"
+    val args = arrayOf("Pictures/PR_FAVS/")
     try {
         context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, selection, args, null)?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
@@ -126,7 +134,9 @@ fun getFavoritesList(context: Context): List<FavoriteFile> {
                 list.add(FavoriteFile(cursor.getString(nameCol), uri))
             }
         }
-    } catch (e: Exception) {}
+    } catch (exception: Exception) {
+        Log.e("PR_FAV", "Could not read the Favorites folder", exception)
+    }
     return list
 }
 
@@ -149,7 +159,10 @@ fun saveFavoriteMappings(
         obj.put("originalUri", mapping.originalUri)
         obj.put("favoriteUri", mapping.favoriteUri)
         obj.put("originalFileName", mapping.originalFileName)
+        obj.put("originalRelativePath", mapping.originalRelativePath)
+        obj.put("originalSha256", mapping.originalSha256)
         obj.put("dateAdded", mapping.dateAdded)
+        obj.put("isDeleted", mapping.isDeleted)
 
         array.put(obj)
     }
@@ -199,8 +212,17 @@ fun getFavoriteMappings(
                     originalFileName =
                         obj.getString("originalFileName"),
 
+                    originalRelativePath =
+                        obj.optString("originalRelativePath", ""),
+
+                    originalSha256 =
+                        obj.optString("originalSha256", ""),
+
                     dateAdded =
-                        obj.getLong("dateAdded")
+                        obj.getLong("dateAdded"),
+
+                    isDeleted =
+                        obj.optBoolean("isDeleted", false)
                 )
             )
         }
@@ -222,78 +244,222 @@ suspend fun saveToFavoritesFolder(
     displayMode: PhotoDisplayMode = PhotoDisplayMode.FIT
 ): Uri? {
     return withContext(Dispatchers.IO) {
-        try {
-            val inputStream = context.contentResolver.openInputStream(sourceUri)
-            val fullBitmap = BitmapFactory.decodeStream(inputStream) ?: return@withContext null
+        var sourceBitmap: Bitmap? = null
+        var orientedBitmap: Bitmap? = null
+        var croppedBitmap: Bitmap? = null
+        var insertedUri: Uri? = null
 
-            // --- HANDLE EXIF ORIENTATION ---
-            val exif = androidx.exifinterface.media.ExifInterface(context.contentResolver.openInputStream(sourceUri)!!)
-            val orientation = exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION, androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL)
+        try {
+            if (
+                containerSize.width <= 0 ||
+                containerSize.height <= 0
+            ) {
+                return@withContext null
+            }
+
+            val decodedBitmap = context.contentResolver
+                .openInputStream(sourceUri)
+                ?.use { input ->
+                    BitmapFactory.decodeStream(input)
+                }
+                ?: return@withContext null
+
+            sourceBitmap = decodedBitmap
+
+            val orientation = context.contentResolver
+                .openInputStream(sourceUri)
+                ?.use { input ->
+                    androidx.exifinterface.media.ExifInterface(input)
+                        .getAttributeInt(
+                            androidx.exifinterface.media.ExifInterface
+                                .TAG_ORIENTATION,
+                            androidx.exifinterface.media.ExifInterface
+                                .ORIENTATION_NORMAL
+                        )
+                }
+                ?: androidx.exifinterface.media.ExifInterface
+                    .ORIENTATION_NORMAL
 
             val matrix = android.graphics.Matrix()
             when (orientation) {
-                androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-                androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-                androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                androidx.exifinterface.media.ExifInterface
+                    .ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+
+                androidx.exifinterface.media.ExifInterface
+                    .ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+
+                androidx.exifinterface.media.ExifInterface
+                    .ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
             }
 
-            // 1. Create rotated version
-            val rotatedBitmap = Bitmap.createBitmap(fullBitmap, 0, 0, fullBitmap.width, fullBitmap.height, matrix, true)
+            val workingBitmap =
+                if (matrix.isIdentity) {
+                    decodedBitmap
+                } else {
+                    Bitmap.createBitmap(
+                        decodedBitmap,
+                        0,
+                        0,
+                        decodedBitmap.width,
+                        decodedBitmap.height,
+                        matrix,
+                        true
+                    )
+                }
 
-            // FIX: Only recycle fullBitmap if it is NOT the same object as rotatedBitmap
-            if (rotatedBitmap != fullBitmap) {
-                fullBitmap.recycle()
-            }
+            orientedBitmap = workingBitmap
 
-            // 2. Use rotatedBitmap dimensions for calculations
-            val imgW = rotatedBitmap.width.toFloat()
-            val imgH = rotatedBitmap.height.toFloat()
-            val viewW = containerSize.width.toFloat()
-            val viewH = containerSize.height.toFloat()
+            val imageWidth = workingBitmap.width.toFloat()
+            val imageHeight = workingBitmap.height.toFloat()
+            val viewWidth = containerSize.width.toFloat()
+            val viewHeight = containerSize.height.toFloat()
 
-            // 3. Math and crop
             val baseScale =
                 if (displayMode == PhotoDisplayMode.FIT) {
-                    minOf(viewW / imgW, viewH / imgH)
+                    minOf(
+                        viewWidth / imageWidth,
+                        viewHeight / imageHeight
+                    )
                 } else {
-                    maxOf(viewW / imgW, viewH / imgH)
+                    maxOf(
+                        viewWidth / imageWidth,
+                        viewHeight / imageHeight
+                    )
                 }
-            val totalScale = baseScale * scale
-            val cropW = (viewW / totalScale).coerceAtMost(imgW)
-            val cropH = (viewH / totalScale).coerceAtMost(imgH)
 
-            val centerX = imgW / 2f - (offset.x / totalScale)
-            val centerY = imgH / 2f - (offset.y / totalScale)
+            val totalScale = (baseScale * scale)
+                .coerceAtLeast(0.0001f)
+            val cropWidth = (viewWidth / totalScale)
+                .coerceAtMost(imageWidth)
+            val cropHeight = (viewHeight / totalScale)
+                .coerceAtMost(imageHeight)
 
-            val left = (centerX - cropW / 2f).toInt().coerceIn(0, (imgW - cropW).toInt())
-            val top = (centerY - cropH / 2f).toInt().coerceIn(0, (imgH - cropH).toInt())
+            val centerX =
+                imageWidth / 2f - offset.x / totalScale
+            val centerY =
+                imageHeight / 2f - offset.y / totalScale
 
-            val cropped = Bitmap.createBitmap(rotatedBitmap, left, top, cropW.toInt().coerceAtLeast(1), cropH.toInt().coerceAtLeast(1))
+            val maxLeft =
+                (imageWidth - cropWidth).toInt().coerceAtLeast(0)
+            val maxTop =
+                (imageHeight - cropHeight).toInt().coerceAtLeast(0)
 
-            // 4. Cleanup rotatedBitmap only if it wasn't the original
-            if (rotatedBitmap != fullBitmap) {
-                rotatedBitmap.recycle()
-            }
+            val left = (centerX - cropWidth / 2f)
+                .toInt()
+                .coerceIn(0, maxLeft)
+            val top = (centerY - cropHeight / 2f)
+                .toInt()
+                .coerceIn(0, maxTop)
 
-            val finalName =
-                java.text.SimpleDateFormat(
-                    "yyyyMMddHHmmss",
-                    java.util.Locale.US
-                ).format(java.util.Date()) + ".jpg"
+            val finalBitmap = Bitmap.createBitmap(
+                workingBitmap,
+                left,
+                top,
+                cropWidth.toInt().coerceAtLeast(1),
+                cropHeight.toInt().coerceAtLeast(1)
+            )
+
+            croppedBitmap = finalBitmap
+
+            val originalStem = splitFileName(fileName).stem
+                .replace(Regex("[^A-Za-z0-9 _-]"), "")
+                .trim()
+                .take(40)
+                .ifBlank { "favorite" }
+
+            val timestamp = java.text.SimpleDateFormat(
+                "yyyyMMddHHmmssSSS",
+                java.util.Locale.US
+            ).format(java.util.Date())
+
+            val finalName = "${originalStem}_$timestamp.jpg"
 
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/PR_FAVS")
+                put(
+                    MediaStore.MediaColumns.RELATIVE_PATH,
+                    "Pictures/PR_FAVS"
+                )
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
-            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-            uri?.let { context.contentResolver.openOutputStream(it)?.use { out -> cropped.compress(Bitmap.CompressFormat.JPEG, 95, out) } }
 
-            cropped.recycle()
-            uri
-        } catch (e: Exception) {
-            e.printStackTrace()
+            insertedUri = context.contentResolver.insert(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                values
+            ) ?: return@withContext null
+
+            val written = context.contentResolver
+                .openOutputStream(insertedUri)
+                ?.use { output ->
+                    finalBitmap.compress(
+                        Bitmap.CompressFormat.JPEG,
+                        95,
+                        output
+                    )
+                } == true
+
+            if (!written) {
+                context.contentResolver.delete(
+                    insertedUri,
+                    null,
+                    null
+                )
+                insertedUri = null
+            } else {
+                context.contentResolver.update(
+                    insertedUri,
+                    ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    },
+                    null,
+                    null
+                )
+            }
+
+            insertedUri
+        } catch (exception: Exception) {
+            insertedUri?.let { failedUri ->
+                runCatching {
+                    context.contentResolver.delete(
+                        failedUri,
+                        null,
+                        null
+                    )
+                }
+            }
+
+            Log.e(
+                "PR_FAV",
+                "Could not save favorite from $sourceUri",
+                exception
+            )
             null
+        } finally {
+            croppedBitmap?.let { bitmap ->
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
+            }
+
+            orientedBitmap?.let { bitmap ->
+                if (
+                    bitmap !== croppedBitmap &&
+                    !bitmap.isRecycled
+                ) {
+                    bitmap.recycle()
+                }
+            }
+
+            sourceBitmap?.let { bitmap ->
+                if (
+                    bitmap !== orientedBitmap &&
+                    bitmap !== croppedBitmap &&
+                    !bitmap.isRecycled
+                ) {
+                    bitmap.recycle()
+                }
+            }
         }
     }
 }
@@ -321,13 +487,13 @@ fun DashboardActionCard(title: String, subtitle: String, icon: ImageVector, colo
 fun deleteFavorite(
     context: Context,
     uri: Uri?
-) {
+): Boolean {
     if (uri == null || uri.toString().isBlank()) {
         Log.d("PR_FAV", "Skipping delete. Invalid URI.")
-        return
+        return false
     }
 
-    try {
+    return try {
         val rows = context.contentResolver.delete(
             uri,
             null,
@@ -337,8 +503,10 @@ fun deleteFavorite(
         Log.d("PR_FAV", "Deleted rows: $rows")
         Log.d("PR_FAV", "Tried to delete: $uri")
 
-    } catch (e: Exception) {
-        e.printStackTrace()
+        rows > 0
+    } catch (exception: Exception) {
+        Log.e("PR_FAV", "Favorite delete failed: $uri", exception)
+        false
     }
 }
 

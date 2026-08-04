@@ -38,6 +38,26 @@ data class FavoritesZipImportResult(
     val reviews: List<FavoriteLinkReview>
 )
 
+enum class FavoritesZipImportPhase {
+    READING_BACKUP,
+    CHECKING_EXISTING_FAVORITES,
+    IMPORTING_FAVORITES,
+    PREPARING_SOURCE_LIBRARY,
+    RESTORING_LINKS,
+    COMPARING_SOURCE_PHOTOS,
+    FINISHING
+}
+
+data class FavoritesZipImportProgress(
+    val phase: FavoritesZipImportPhase,
+    val completed: Int = 0,
+    val total: Int = 0,
+    val currentFileName: String = "",
+    val importedCount: Int = 0,
+    val skippedDuplicateCount: Int = 0,
+    val failedCount: Int = 0
+)
+
 private data class BackupManifestFile(
     val archiveFile: String,
     val originalFavoriteName: String,
@@ -94,13 +114,47 @@ fun importFavoritesZip(
     sourceZipUri: Uri,
     existingFavorites: List<FavoriteFile>,
     existingMappings: List<FavoriteMapping>,
-    sourceImages: List<Uri>
+    sourceImages: List<Uri>,
+    onProgress: (FavoritesZipImportProgress) -> Unit = {}
 ): FavoritesZipImportResult {
+
+    onProgress(
+        FavoritesZipImportProgress(
+            phase = FavoritesZipImportPhase.READING_BACKUP
+        )
+    )
 
     val manifest = readBackupManifest(
         context = context,
-        sourceZipUri = sourceZipUri
+        sourceZipUri = sourceZipUri,
+        onProgress = onProgress
     )
+
+    var importedCount = 0
+    var skippedDuplicateCount = 0
+    var failedCount = 0
+    var ignoredEntryCount = 0
+    var importedBytes = 0L
+    var entryCount = 0
+
+    fun reportProgress(
+        phase: FavoritesZipImportPhase,
+        completed: Int = 0,
+        total: Int = 0,
+        currentFileName: String = ""
+    ) {
+        onProgress(
+            FavoritesZipImportProgress(
+                phase = phase,
+                completed = completed,
+                total = total,
+                currentFileName = currentFileName,
+                importedCount = importedCount,
+                skippedDuplicateCount = skippedDuplicateCount,
+                failedCount = failedCount
+            )
+        )
+    }
 
     /*
      * Keep every existing favorite with the same hash in a queue. This matters
@@ -109,7 +163,14 @@ fun importFavoritesZip(
     val existingFavoritesByHash =
         mutableMapOf<String, MutableList<FavoriteFile>>()
 
-    existingFavorites.forEach { favorite ->
+    reportProgress(
+        phase =
+            FavoritesZipImportPhase.CHECKING_EXISTING_FAVORITES,
+        completed = 0,
+        total = existingFavorites.size
+    )
+
+    existingFavorites.forEachIndexed { index, favorite ->
         val hash = sha256ForUri(
             context = context,
             uri = favorite.mediaUri
@@ -120,6 +181,14 @@ fun importFavoritesZip(
                 .getOrPut(hash) { mutableListOf() }
                 .add(favorite)
         }
+
+        reportProgress(
+            phase =
+                FavoritesZipImportPhase.CHECKING_EXISTING_FAVORITES,
+            completed = index + 1,
+            total = existingFavorites.size,
+            currentFileName = favorite.fileNameOnDisk
+        )
     }
 
     val usedExistingFavoriteUris =
@@ -134,12 +203,16 @@ fun importFavoritesZip(
     val restoredArchiveFavorites =
         mutableListOf<RestoredArchiveFavorite>()
 
-    var importedCount = 0
-    var skippedDuplicateCount = 0
-    var failedCount = 0
-    var ignoredEntryCount = 0
-    var importedBytes = 0L
-    var entryCount = 0
+    val totalFavoriteEntries =
+        manifest.filesByArchiveName.size
+
+    var processedFavoriteEntries = 0
+
+    reportProgress(
+        phase = FavoritesZipImportPhase.IMPORTING_FAVORITES,
+        completed = 0,
+        total = totalFavoriteEntries
+    )
 
     val inputStream = context.contentResolver
         .openInputStream(sourceZipUri)
@@ -191,6 +264,14 @@ fun importFavoritesZip(
                         ?.takeIf { it.isNotBlank() }
                         ?: fallbackFileName
 
+                reportProgress(
+                    phase =
+                        FavoritesZipImportPhase.IMPORTING_FAVORITES,
+                    completed = processedFavoriteEntries,
+                    total = totalFavoriteEntries,
+                    currentFileName = desiredFileName
+                )
+
                 val mimeType =
                     manifestFile
                         ?.mimeType
@@ -199,6 +280,16 @@ fun importFavoritesZip(
 
                 if (!mimeType.startsWith("image/")) {
                     ignoredEntryCount++
+                    processedFavoriteEntries++
+
+                    reportProgress(
+                        phase =
+                            FavoritesZipImportPhase.IMPORTING_FAVORITES,
+                        completed = processedFavoriteEntries,
+                        total = totalFavoriteEntries,
+                        currentFileName = desiredFileName
+                    )
+
                     continue
                 }
 
@@ -288,6 +379,15 @@ fun importFavoritesZip(
                     failedCount++
                 } finally {
                     tempFile.delete()
+                    processedFavoriteEntries++
+
+                    reportProgress(
+                        phase =
+                            FavoritesZipImportPhase.IMPORTING_FAVORITES,
+                        completed = processedFavoriteEntries,
+                        total = totalFavoriteEntries,
+                        currentFileName = desiredFileName
+                    )
                 }
 
             } finally {
@@ -298,11 +398,31 @@ fun importFavoritesZip(
         }
     }
 
+    reportProgress(
+        phase = FavoritesZipImportPhase.RESTORING_LINKS,
+        completed = 0,
+        total = restoredArchiveFavorites.size
+    )
+
     val linkResult = restoreSourceLinks(
         context = context,
         restoredArchiveFavorites = restoredArchiveFavorites,
         existingMappings = existingMappings,
-        sourceImages = sourceImages
+        sourceImages = sourceImages,
+        reportProgress = { phase, completed, total, fileName ->
+            reportProgress(
+                phase = phase,
+                completed = completed,
+                total = total,
+                currentFileName = fileName
+            )
+        }
+    )
+
+    reportProgress(
+        phase = FavoritesZipImportPhase.FINISHING,
+        completed = 1,
+        total = 1
     )
 
     return FavoritesZipImportResult(
@@ -336,17 +456,32 @@ private fun restoreSourceLinks(
     context: Context,
     restoredArchiveFavorites: List<RestoredArchiveFavorite>,
     existingMappings: List<FavoriteMapping>,
-    sourceImages: List<Uri>
+    sourceImages: List<Uri>,
+    reportProgress: (
+        FavoritesZipImportPhase,
+        Int,
+        Int,
+        String
+    ) -> Unit
 ): SourceLinkRestoreResult {
 
     val updatedMappings = existingMappings.toMutableList()
 
-    val sourceCandidates = sourceImages
+    val distinctSourceImages = sourceImages
         .distinctBy { it.toString() }
-        .map { uri ->
+
+    reportProgress(
+        FavoritesZipImportPhase.PREPARING_SOURCE_LIBRARY,
+        0,
+        distinctSourceImages.size,
+        ""
+    )
+
+    val sourceCandidates = distinctSourceImages
+        .mapIndexed { index, uri ->
             val relativePath = getOriginalRelativePath(uri)
 
-            FavoriteSourceCandidate(
+            val candidate = FavoriteSourceCandidate(
                 sourceUri = uri,
                 relativePath = relativePath,
                 fileName = relativePath
@@ -355,6 +490,21 @@ private fun restoreSourceLinks(
                         uri.lastPathSegment ?: "image"
                     }
             )
+
+            if (
+                index == 0 ||
+                (index + 1) % 25 == 0 ||
+                index == distinctSourceImages.lastIndex
+            ) {
+                reportProgress(
+                    FavoritesZipImportPhase.PREPARING_SOURCE_LIBRARY,
+                    index + 1,
+                    distinctSourceImages.size,
+                    candidate.fileName
+                )
+            }
+
+            candidate
         }
 
     val sourceByUri = sourceCandidates
@@ -373,10 +523,26 @@ private fun restoreSourceLinks(
     var unresolvedLinkCount = 0
     var missingSourceMetadataCount = 0
 
-    restoredArchiveFavorites.forEach { restored ->
+    val totalLinks = restoredArchiveFavorites.size
+
+    restoredArchiveFavorites.forEachIndexed restoredLoop@ {
+            restoredIndex,
+            restored ->
+
         val manifestFile = restored.manifestFile
         val favoriteFile = restored.favoriteFile
         val favoriteUriString = favoriteFile.mediaUri.toString()
+
+        val currentFileName =
+            manifestFile.originalFavoriteName
+                .ifBlank { favoriteFile.fileNameOnDisk }
+
+        reportProgress(
+            FavoritesZipImportPhase.RESTORING_LINKS,
+            restoredIndex,
+            totalLinks,
+            currentFileName
+        )
 
         if (
             updatedMappings.any {
@@ -384,7 +550,15 @@ private fun restoreSourceLinks(
             }
         ) {
             existingLinkCount++
-            return@forEach
+
+            reportProgress(
+                FavoritesZipImportPhase.RESTORING_LINKS,
+                restoredIndex + 1,
+                totalLinks,
+                currentFileName
+            )
+
+            return@restoredLoop
         }
 
         val hasPortableSourceData =
@@ -395,7 +569,15 @@ private fun restoreSourceLinks(
 
         if (!hasPortableSourceData) {
             missingSourceMetadataCount++
-            return@forEach
+
+            reportProgress(
+                FavoritesZipImportPhase.RESTORING_LINKS,
+                restoredIndex + 1,
+                totalLinks,
+                currentFileName
+            )
+
+            return@restoredLoop
         }
 
         val usedOriginalUris = updatedMappings
@@ -442,7 +624,24 @@ private fun restoreSourceLinks(
                     pathMatches.size <= 1 -> pathMatches
 
                     manifestFile.originalSha256.isNotBlank() -> {
-                        pathMatches.filter { candidate ->
+                        pathMatches.filterIndexed {
+                                candidateIndex,
+                                candidate ->
+
+                            if (
+                                candidateIndex == 0 ||
+                                (candidateIndex + 1) % 25 == 0 ||
+                                candidateIndex == pathMatches.lastIndex
+                            ) {
+                                reportProgress(
+                                    FavoritesZipImportPhase
+                                        .COMPARING_SOURCE_PHOTOS,
+                                    candidateIndex + 1,
+                                    pathMatches.size,
+                                    currentFileName
+                                )
+                            }
+
                             sha256ForCandidate(
                                 context = context,
                                 candidate = candidate,
@@ -462,7 +661,24 @@ private fun restoreSourceLinks(
             resolvedCandidates.isEmpty() &&
             manifestFile.originalSha256.isNotBlank()
         ) {
-            sourceCandidates.forEach { candidate ->
+            sourceCandidates.forEachIndexed {
+                    candidateIndex,
+                    candidate ->
+
+                if (
+                    candidateIndex == 0 ||
+                    (candidateIndex + 1) % 25 == 0 ||
+                    candidateIndex == sourceCandidates.lastIndex
+                ) {
+                    reportProgress(
+                        FavoritesZipImportPhase
+                            .COMPARING_SOURCE_PHOTOS,
+                        candidateIndex + 1,
+                        sourceCandidates.size,
+                        currentFileName
+                    )
+                }
+
                 if (
                     candidate.sourceUri.toString() !in usedOriginalUris &&
                     sha256ForCandidate(
@@ -516,6 +732,13 @@ private fun restoreSourceLinks(
                 )
             }
         }
+
+        reportProgress(
+            FavoritesZipImportPhase.RESTORING_LINKS,
+            restoredIndex + 1,
+            totalLinks,
+            currentFileName
+        )
     }
 
     return SourceLinkRestoreResult(
@@ -587,7 +810,8 @@ private fun sha256ForCandidate(
 
 private fun readBackupManifest(
     context: Context,
-    sourceZipUri: Uri
+    sourceZipUri: Uri,
+    onProgress: (FavoritesZipImportProgress) -> Unit
 ): BackupManifest {
 
     val inputStream = context.contentResolver
@@ -597,14 +821,34 @@ private fun readBackupManifest(
         )
 
     var manifestText: String? = null
+    var entriesChecked = 0
 
     ZipInputStream(inputStream.buffered()).use { zipInput ->
         while (true) {
             val entry = zipInput.nextEntry ?: break
 
+            entriesChecked++
+
             try {
                 val normalizedName =
                     normalizeArchiveEntryName(entry.name)
+
+                if (
+                    entriesChecked == 1 ||
+                    entriesChecked % 10 == 0 ||
+                    normalizedName == "manifest.json"
+                ) {
+                    onProgress(
+                        FavoritesZipImportProgress(
+                            phase =
+                                FavoritesZipImportPhase.READING_BACKUP,
+                            completed = entriesChecked,
+                            total = 0,
+                            currentFileName =
+                                normalizedName ?: entry.name
+                        )
+                    )
+                }
 
                 if (
                     !entry.isDirectory &&

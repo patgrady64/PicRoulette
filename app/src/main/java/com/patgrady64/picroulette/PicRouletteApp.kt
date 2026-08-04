@@ -4,20 +4,11 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -54,29 +45,24 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
-import androidx.compose.material.icons.rounded.FolderCopy
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Pin
 import androidx.compose.material.icons.rounded.PinDrop
-import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -84,7 +70,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -96,7 +81,6 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -111,7 +95,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import com.patgrady64.picroulette.utils.exportFavoritesZip
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -119,6 +102,8 @@ import kotlinx.coroutines.withContext
 import kotlin.collections.component1
 import kotlin.collections.component2
 import kotlin.collections.plus
+import com.patgrady64.picroulette.utils.FavoritesZipImportPhase
+import com.patgrady64.picroulette.utils.FavoritesZipImportProgress
 import com.patgrady64.picroulette.utils.importFavoritesZip
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -146,6 +131,10 @@ fun PicRouletteApp(themeColor: Color) {
     }
     var isImportingFavorites by remember {
         mutableStateOf(false)
+    }
+
+    var favoritesImportProgress by remember {
+        mutableStateOf<FavoritesZipImportProgress?>(null)
     }
 
     var isMigratingFavoriteLinks by remember {
@@ -217,6 +206,11 @@ fun PicRouletteApp(themeColor: Color) {
     }
 
     var showMetadata by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameBaseName by remember { mutableStateOf("") }
+    var renameErrorMessage by remember { mutableStateOf<String?>(null) }
+    var isRenaming by remember { mutableStateOf(false) }
+    var metadataRefreshVersion by remember { mutableIntStateOf(0) }
 
     var currentOriginalUri by remember {
         mutableStateOf<Uri?>(null)
@@ -226,10 +220,12 @@ fun PicRouletteApp(themeColor: Color) {
     val currentView = LocalView.current
     DisposableEffect(
         isPlaying,
-        keepScreenAwakeEnabled
+        keepScreenAwakeEnabled,
+        isImportingFavorites
     ) {
         currentView.keepScreenOn =
-            isPlaying && keepScreenAwakeEnabled
+            isImportingFavorites ||
+                (isPlaying && keepScreenAwakeEnabled)
 
         onDispose {
             currentView.keepScreenOn = false
@@ -238,17 +234,6 @@ fun PicRouletteApp(themeColor: Color) {
 
     val scale = remember { mutableFloatStateOf(1f) }
     val offset = remember { mutableStateOf(Offset.Zero) }
-    var showResolution by remember { mutableStateOf(false) }
-    var lastTransformTime by remember { mutableLongStateOf(0L) }
-
-    LaunchedEffect(lastTransformTime) {
-        if (lastTransformTime > 0) {
-            showResolution = true
-            delay(1500)
-            showResolution = false
-        }
-    }
-
     LaunchedEffect(showShuffleToast) {
         if (showShuffleToast) {
             delay(1800)
@@ -265,12 +250,11 @@ fun PicRouletteApp(themeColor: Color) {
             uiVisible = false
             showCountSetting = showPhotoCounterByDefault
             showMetadata = false
+            showRenameDialog = false
+            renameErrorMessage = null
+            isRenaming = false
             showDeleteDialog = false
             showShuffleToast = false
-            showResolution = false
-
-            // Cancel any previous transform/resolution display state.
-            lastTransformTime = 0L
 
             // Reset zoom and image position.
             scale.floatValue = 1f
@@ -280,14 +264,13 @@ fun PicRouletteApp(themeColor: Color) {
 
     val transformState = rememberTransformableState { z, o, _ ->
         if (!uiVisible) {
-            lastTransformTime = System.currentTimeMillis()
             scale.floatValue *= z
             offset.value += o
         }
     }
 
     fun refreshFavs(context: Context, onResult: (List<FavoriteFile>) -> Unit) {
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch(Dispatchers.IO) {
             // 1. Get physical files currently in the directory
             val diskFiles = getFavoritesList(context)
 
@@ -372,6 +355,12 @@ fun PicRouletteApp(themeColor: Color) {
             val sourceImagesSnapshot =
                 pickedFolderImages.value.toList()
 
+            favoritesImportProgress =
+                FavoritesZipImportProgress(
+                    phase =
+                        FavoritesZipImportPhase.READING_BACKUP
+                )
+
             isImportingFavorites = true
 
             scope.launch {
@@ -380,16 +369,40 @@ fun PicRouletteApp(themeColor: Color) {
                         importFavoritesZip(
                             context = context,
                             sourceZipUri = sourceZipUri,
-                            existingFavorites = existingFavoritesSnapshot,
-                            existingMappings = existingMappingsSnapshot,
-                            sourceImages = sourceImagesSnapshot
+                            existingFavorites =
+                                existingFavoritesSnapshot,
+                            existingMappings =
+                                existingMappingsSnapshot,
+                            sourceImages =
+                                sourceImagesSnapshot,
+                            onProgress = { progress ->
+                                scope.launch {
+                                    if (isImportingFavorites) {
+                                        favoritesImportProgress =
+                                            progress
+                                    }
+                                }
+                            }
                         )
                     }
                 }
 
-                isImportingFavorites = false
-
                 result.onSuccess { importResult ->
+
+                    favoritesImportProgress =
+                        FavoritesZipImportProgress(
+                            phase =
+                                FavoritesZipImportPhase.FINISHING,
+                            completed = 1,
+                            total = 1,
+                            importedCount =
+                                importResult.importedCount,
+                            skippedDuplicateCount =
+                                importResult
+                                    .skippedDuplicateCount,
+                            failedCount =
+                                importResult.failedCount
+                        )
 
                     favoriteMappings =
                         importResult.updatedMappings
@@ -403,16 +416,6 @@ fun PicRouletteApp(themeColor: Color) {
                         importResult.reviews
 
                     currentFavoriteLinkReviewIndex = 0
-
-                    /*
-                     * Refresh the physical files and dashboard count after the
-                     * restored mappings have been saved.
-                     */
-                    refreshFavs(context) { updatedFavorites ->
-                        favoriteFiles = updatedFavorites
-                    }
-
-                    showBackupRestore = false
 
                     val sizeMb =
                         importResult.importedBytes /
@@ -474,15 +477,29 @@ fun PicRouletteApp(themeColor: Color) {
                         }
                     }
 
-                    android.widget.Toast.makeText(
-                        context,
-                        message,
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
+                    /*
+                     * Keep the progress dialog visible until the physical
+                     * favorites list has been refreshed on the main thread.
+                     */
+                    refreshFavs(context) { updatedFavorites ->
+                        favoriteFiles = updatedFavorites
+                        showBackupRestore = false
+                        isImportingFavorites = false
+                        favoritesImportProgress = null
+
+                        android.widget.Toast.makeText(
+                            context,
+                            message,
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
                 }
 
                 result.onFailure { exception ->
                     exception.printStackTrace()
+
+                    isImportingFavorites = false
+                    favoritesImportProgress = null
 
                     android.widget.Toast.makeText(
                         context,
@@ -494,7 +511,6 @@ fun PicRouletteApp(themeColor: Color) {
             }
         }
 
-
     val folderLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.OpenDocumentTree()
@@ -503,7 +519,8 @@ fun PicRouletteApp(themeColor: Color) {
                 runCatching {
                     context.contentResolver.takePersistableUriPermission(
                         selectedUri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                     )
                 }
 
@@ -853,6 +870,22 @@ fun PicRouletteApp(themeColor: Color) {
                         }
                     },
                     onRemoveFolder = { config ->
+                        runCatching {
+                            context.contentResolver
+                                .releasePersistableUriPermission(
+                                    config.uri,
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                )
+                        }.recoverCatching {
+                            // Older saved folders may only have a read grant.
+                            context.contentResolver
+                                .releasePersistableUriPermission(
+                                    config.uri,
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                )
+                        }
+
                         folderConfigs = folderConfigs.filterNot {
                             it == config
                         }
@@ -1025,17 +1058,18 @@ fun PicRouletteApp(themeColor: Color) {
                 val currentUri = activeSessionList.getOrNull(currentIndex.intValue)
                 if (currentUri != null) {
 
-                    val currentFileName = remember(currentUri) {
-                        var name = ""
-                        context.contentResolver.query(
-                            currentUri,
-                            arrayOf(MediaStore.Images.Media.DISPLAY_NAME),
-                            null,
-                            null,
-                            null
-                        )?.use { if (it.moveToFirst()) name = it.getString(0) }
-                        name.ifEmpty { currentUri.lastPathSegment ?: "img" }
+                    val currentFileDetails = remember(
+                        currentUri,
+                        metadataRefreshVersion
+                    ) {
+                        queryPhotoFileDetails(
+                            context = context,
+                            uri = currentUri
+                        )
                     }
+
+                    val currentFileName =
+                        currentFileDetails.displayName
 
                     val displayFileName = remember(
                         currentUri,
@@ -1235,13 +1269,35 @@ fun PicRouletteApp(themeColor: Color) {
                                                             val mapping = if (isFavoritesMode) {
                                                                 favoriteMappings.find { it.favoriteUri == currentUri.toString() }
                                                             } else {
-                                                                favoriteMappings.find { it.originalUri == currentUri.toString() }
+                                                                favoriteMappings.find {
+                                                                    sameImage(
+                                                                        Uri.parse(it.originalUri),
+                                                                        currentUri
+                                                                    )
+                                                                }
                                                             }
 
                                                             mapping?.let { mapToDelete ->
-                                                                // 1. Physically delete
-                                                                if (mapToDelete.favoriteUri.isNotBlank()) {
-                                                                    deleteFavorite(context, Uri.parse(mapToDelete.favoriteUri))
+                                                                // 1. Physically delete before removing its mapping.
+                                                                val favoriteDeleted =
+                                                                    if (mapToDelete.favoriteUri.isBlank()) {
+                                                                        true
+                                                                    } else {
+                                                                        withContext(Dispatchers.IO) {
+                                                                            deleteFavorite(
+                                                                                context,
+                                                                                Uri.parse(
+                                                                                    mapToDelete.favoriteUri
+                                                                                )
+                                                                            )
+                                                                        }
+                                                                    }
+
+                                                                if (!favoriteDeleted) {
+                                                                    snackbarHostState.showSnackbar(
+                                                                        "The favorite could not be removed."
+                                                                    )
+                                                                    return@launch
                                                                 }
 
                                                                 // 2. Remove mapping entirely or clear URI
@@ -1253,7 +1309,10 @@ fun PicRouletteApp(themeColor: Color) {
                                                                     activeSessionList.remove(currentUri)
 
                                                                     // Force a sync with the disk before exiting
-                                                                    val updatedFavs = getFavoritesList(context)
+                                                                    val updatedFavs =
+                                                                        withContext(Dispatchers.IO) {
+                                                                            getFavoritesList(context)
+                                                                        }
                                                                     favoriteFiles = updatedFavs
 
                                                                     if (activeSessionList.isEmpty()) {
@@ -1478,82 +1537,430 @@ fun PicRouletteApp(themeColor: Color) {
                                 exit = fadeOut() + scaleOut()
                             ) {
                                 Box(
-                                    modifier = Modifier.fillMaxSize()
+                                    modifier = Modifier
+                                        .fillMaxSize()
                                         .background(Color.Black.copy(0.6f))
                                         .clickable { showMetadata = false },
                                     contentAlignment = Alignment.Center
                                 ) {
+                                    val imageBounds = remember(currentUri) {
+                                        BitmapFactory.Options().apply {
+                                            inJustDecodeBounds = true
+
+                                            context.contentResolver
+                                                .openInputStream(currentUri)
+                                                ?.use { input ->
+                                                    BitmapFactory.decodeStream(
+                                                        input,
+                                                        null,
+                                                        this
+                                                    )
+                                                }
+                                        }
+                                    }
+
+                                    val sizeText =
+                                        currentFileDetails.sizeBytes?.let { bytes ->
+                                            if (bytes >= 1024L * 1024L) {
+                                                "%.1f MB".format(
+                                                    Locale.US,
+                                                    bytes / 1024.0 / 1024.0
+                                                )
+                                            } else {
+                                                "${bytes / 1024L} KB"
+                                            }
+                                        } ?: "Unknown"
+
                                     Surface(
                                         color = Color(0xFF1A1A1A),
                                         shape = RoundedCornerShape(24.dp),
-                                        modifier = Modifier.padding(24.dp).fillMaxWidth()
-                                            .clickable(enabled = false) {}) {
-                                        Column(modifier = Modifier.padding(24.dp)) {
+                                        modifier = Modifier
+                                            .padding(24.dp)
+                                            .fillMaxWidth()
+                                            .heightIn(max = 620.dp)
+                                            .clickable { }
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .padding(24.dp)
+                                                .verticalScroll(
+                                                    rememberScrollState()
+                                                )
+                                        ) {
                                             Text(
                                                 "Photo Metadata",
-                                                style = MaterialTheme.typography.headlineSmall,
+                                                style =
+                                                    MaterialTheme.typography
+                                                        .headlineSmall,
                                                 color = themeColor
                                             )
+
                                             Spacer(Modifier.height(16.dp))
-                                            val fileDetails = context.contentResolver.query(
-                                                currentUri,
-                                                null,
-                                                null,
-                                                null,
-                                                null
-                                            )?.use { cursor ->
-                                                val nIdx =
-                                                    cursor.getColumnIndex(MediaStore.Images.Media.DISPLAY_NAME);
-                                                val sIdx =
-                                                    cursor.getColumnIndex(MediaStore.Images.Media.SIZE); cursor.moveToFirst(); Pair(
-                                                cursor.getString(nIdx) ?: "Unknown",
-                                                cursor.getLong(sIdx)
-                                            )
-                                            }
-                                            val opt = BitmapFactory.Options().apply {
-                                                inJustDecodeBounds = true
-                                            }; context.contentResolver.openInputStream(currentUri)
-                                            ?.use { BitmapFactory.decodeStream(it, null, opt) }
+
                                             MetadataRow(
                                                 "Filename",
-                                                fileDetails?.first ?: "Unknown"
-                                            ); MetadataRow(
-                                            "Size",
-                                            "${(fileDetails?.second ?: 0) / 1024} KB"
-                                        ); MetadataRow(
-                                            "Resolution",
-                                            "${opt.outWidth} x ${opt.outHeight} px"
-                                        ); MetadataRow("URI Path", currentUri.path ?: "N/A")
-                                            Spacer(Modifier.height(24.dp)); Button(onClick = {
-                                            showMetadata = false
-                                        }, modifier = Modifier.fillMaxWidth()) { Text("Close") }
+                                                currentFileDetails.displayName
+                                            )
+                                            MetadataRow("Size", sizeText)
+                                            MetadataRow(
+                                                "Resolution",
+                                                "${imageBounds.outWidth} x " +
+                                                    "${imageBounds.outHeight} px"
+                                            )
+                                            MetadataRow(
+                                                "URI Path",
+                                                currentUri.path ?: "N/A"
+                                            )
+
+                                            Spacer(Modifier.height(24.dp))
+
+                                            Button(
+                                                onClick = {
+                                                    renameBaseName =
+                                                        splitFileName(
+                                                            currentFileDetails
+                                                                .displayName
+                                                        ).stem
+                                                    renameErrorMessage = null
+                                                    showRenameDialog = true
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text("Rename File")
+                                            }
+
+                                            Spacer(Modifier.height(10.dp))
+
+                                            TextButton(
+                                                onClick = {
+                                                    showMetadata = false
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text("Close")
+                                            }
                                         }
                                     }
                                 }
                             }
-                            if (showDeleteDialog) {
+
+                            if (showRenameDialog) {
+                                val currentNameParts =
+                                    splitFileName(
+                                        currentFileDetails.displayName
+                                    )
+
                                 AlertDialog(
-                                    onDismissRequest = { showDeleteDialog = false },
-                                    title = { Text("Delete?") },
-                                    text = { Text("Permanently remove?") },
-                                    confirmButton = {
-                                        TextButton(onClick = {
-                                            showDeleteDialog = false; scope.launch {
-                                            activeSessionList.remove(
-                                                currentUri
-                                            ); if (activeSessionList.isEmpty()) isPlaying =
-                                            false; try {
-                                            context.contentResolver.delete(currentUri, null, null)
-                                        } catch (e: Exception) {
-                                        }; scanAllFolders()
+                                    onDismissRequest = {
+                                        if (!isRenaming) {
+                                            showRenameDialog = false
+                                            renameErrorMessage = null
                                         }
-                                        }) { Text("Delete", color = Color.Red) }
+                                    },
+                                    title = { Text("Rename File") },
+                                    text = {
+                                        Column {
+                                            Text(
+                                                "Enter a new name. The image " +
+                                                    "type will stay the same."
+                                            )
+
+                                            Spacer(Modifier.height(14.dp))
+
+                                            OutlinedTextField(
+                                                value = renameBaseName,
+                                                onValueChange = {
+                                                    renameBaseName = it
+                                                    renameErrorMessage = null
+                                                },
+                                                label = { Text("Filename") },
+                                                singleLine = true,
+                                                enabled = !isRenaming,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+
+                                            if (
+                                                currentNameParts.extension
+                                                    .isNotEmpty()
+                                            ) {
+                                                Spacer(Modifier.height(6.dp))
+                                                Text(
+                                                    text =
+                                                        "File type: " +
+                                                            currentNameParts
+                                                                .extension,
+                                                    color = Color.Gray,
+                                                    fontSize = 13.sp
+                                                )
+                                            }
+
+                                            renameErrorMessage?.let { message ->
+                                                Spacer(Modifier.height(10.dp))
+                                                Text(
+                                                    text = message,
+                                                    color = Color.Red,
+                                                    fontSize = 13.sp
+                                                )
+                                            }
+                                        }
+                                    },
+                                    confirmButton = {
+                                        TextButton(
+                                            enabled = !isRenaming,
+                                            onClick = {
+                                                val validation =
+                                                    validateRenamedFileName(
+                                                        originalFileName =
+                                                            currentFileDetails
+                                                                .displayName,
+                                                        requestedStem =
+                                                            renameBaseName
+                                                    )
+
+                                                if (!validation.isValid) {
+                                                    renameErrorMessage =
+                                                        validation.errorMessage
+                                                    return@TextButton
+                                                }
+
+                                                val newDisplayName =
+                                                    validation.completeFileName
+                                                        ?: return@TextButton
+
+                                                scope.launch {
+                                                    isRenaming = true
+                                                    renameErrorMessage = null
+
+                                                    val oldUri = currentUri
+                                                    val renameResult =
+                                                        renamePhotoFile(
+                                                            context = context,
+                                                            uri = oldUri,
+                                                            newDisplayName =
+                                                                newDisplayName
+                                                        )
+
+                                                    if (renameResult.isSuccess) {
+                                                        val renamedUri =
+                                                            renameResult
+                                                                .renamedUri
+                                                                ?: oldUri
+
+                                                        val actualDisplayName =
+                                                            withContext(
+                                                                Dispatchers.IO
+                                                            ) {
+                                                                queryPhotoFileDetails(
+                                                                    context = context,
+                                                                    uri = renamedUri
+                                                                ).displayName
+                                                            }.takeUnless {
+                                                                it == "Unknown"
+                                                            } ?: newDisplayName
+
+                                                        if (
+                                                            currentIndex.intValue in
+                                                            activeSessionList.indices
+                                                        ) {
+                                                            activeSessionList[
+                                                                currentIndex.intValue
+                                                            ] = renamedUri
+                                                        }
+
+                                                        var mappingsChanged = false
+
+                                                        favoriteMappings =
+                                                            favoriteMappings.map { mapping ->
+                                                                if (isFavoritesMode) {
+                                                                    if (
+                                                                        mapping.favoriteUri ==
+                                                                        oldUri.toString()
+                                                                    ) {
+                                                                        mappingsChanged = true
+                                                                        mapping.copy(
+                                                                            favoriteUri =
+                                                                                renamedUri
+                                                                                    .toString()
+                                                                        )
+                                                                    } else {
+                                                                        mapping
+                                                                    }
+                                                                } else if (
+                                                                    sameImage(
+                                                                        Uri.parse(
+                                                                            mapping.originalUri
+                                                                        ),
+                                                                        oldUri
+                                                                    )
+                                                                ) {
+                                                                    mappingsChanged = true
+                                                                    mapping.copy(
+                                                                        originalUri =
+                                                                            renamedUri
+                                                                                .toString(),
+                                                                        originalFileName =
+                                                                            actualDisplayName,
+                                                                        originalRelativePath =
+                                                                            getOriginalRelativePath(
+                                                                                renamedUri
+                                                                            )
+                                                                    )
+                                                                } else {
+                                                                    mapping
+                                                                }
+                                                            }.toMutableList()
+
+                                                        if (mappingsChanged) {
+                                                            saveFavoriteMappings(
+                                                                context,
+                                                                favoriteMappings
+                                                            )
+                                                        }
+
+                                                        if (isFavoritesMode) {
+                                                            favoriteFiles =
+                                                                withContext(
+                                                                    Dispatchers.IO
+                                                                ) {
+                                                                    getFavoritesList(
+                                                                        context
+                                                                    )
+                                                                }
+                                                        } else {
+                                                            pickedFolderImages.value =
+                                                                pickedFolderImages.value
+                                                                    .map { libraryUri ->
+                                                                        if (
+                                                                            sameImage(
+                                                                                libraryUri,
+                                                                                oldUri
+                                                                            )
+                                                                        ) {
+                                                                            renamedUri
+                                                                        } else {
+                                                                            libraryUri
+                                                                        }
+                                                                    }
+
+                                                            saveCachedPhotoLibrary(
+                                                                context = context,
+                                                                images =
+                                                                    pickedFolderImages
+                                                                        .value
+                                                            )
+                                                        }
+
+                                                        metadataRefreshVersion++
+                                                        showRenameDialog = false
+
+                                                        snackbarHostState
+                                                            .showSnackbar(
+                                                                "Renamed to " +
+                                                                    actualDisplayName
+                                                            )
+                                                    } else {
+                                                        renameErrorMessage =
+                                                            renameResult.errorMessage
+                                                    }
+
+                                                    isRenaming = false
+                                                }
+                                            }
+                                        ) {
+                                            if (isRenaming) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(18.dp),
+                                                    strokeWidth = 2.dp
+                                                )
+                                            } else {
+                                                Text("Rename")
+                                            }
+                                        }
                                     },
                                     dismissButton = {
-                                        TextButton(onClick = {
-                                            showDeleteDialog = false
-                                        }) { Text("Cancel") }
-                                    })
+                                        TextButton(
+                                            enabled = !isRenaming,
+                                            onClick = {
+                                                showRenameDialog = false
+                                                renameErrorMessage = null
+                                            }
+                                        ) {
+                                            Text("Cancel")
+                                        }
+                                    }
+                                )
+                            }
+
+                            if (showDeleteDialog) {
+                                AlertDialog(
+                                    onDismissRequest = {
+                                        showDeleteDialog = false
+                                    },
+                                    title = { Text("Delete Photo?") },
+                                    text = {
+                                        Text(
+                                            "This permanently removes the " +
+                                                "original photo from the device."
+                                        )
+                                    },
+                                    confirmButton = {
+                                        TextButton(
+                                            onClick = {
+                                                showDeleteDialog = false
+
+                                                scope.launch {
+                                                    val deleteResult =
+                                                        deletePhotoFile(
+                                                            context = context,
+                                                            uri = currentUri
+                                                        )
+
+                                                    deleteResult.onSuccess {
+                                                        activeSessionList.remove(
+                                                            currentUri
+                                                        )
+
+                                                        if (
+                                                            activeSessionList
+                                                                .isEmpty()
+                                                        ) {
+                                                            isPlaying = false
+                                                        } else if (
+                                                            currentIndex.intValue >=
+                                                            activeSessionList.size
+                                                        ) {
+                                                            currentIndex.intValue =
+                                                                activeSessionList
+                                                                    .lastIndex
+                                                        }
+
+                                                        scanAllFolders()
+                                                    }.onFailure { exception ->
+                                                        snackbarHostState
+                                                            .showSnackbar(
+                                                                exception.message
+                                                                    ?: "The photo could not be deleted."
+                                                            )
+                                                    }
+                                                }
+                                            }
+                                        ) {
+                                            Text(
+                                                "Delete",
+                                                color = Color.Red
+                                            )
+                                        }
+                                    },
+                                    dismissButton = {
+                                        TextButton(
+                                            onClick = {
+                                                showDeleteDialog = false
+                                            }
+                                        ) {
+                                            Text("Cancel")
+                                        }
+                                    }
+                                )
                             }
                         }
                     }
@@ -1855,6 +2262,13 @@ fun PicRouletteApp(themeColor: Color) {
             }
         )
     }
+
+    if (isImportingFavorites) {
+        FavoritesImportProgressDialog(
+            progress = favoritesImportProgress,
+            themeColor = themeColor
+        )
+    }
 }
 
 @Composable
@@ -1887,6 +2301,239 @@ private fun ViewerDisplayModeChoice(
                 fontSize = 14.sp
             )
         }
+    }
+}
+
+@Composable
+private fun FavoritesImportProgressDialog(
+    progress: FavoritesZipImportProgress?,
+    themeColor: Color
+) {
+    val phase = progress?.phase
+        ?: FavoritesZipImportPhase.READING_BACKUP
+
+    val completed = progress?.completed ?: 0
+    val total = progress?.total ?: 0
+
+    val fraction =
+        if (total > 0) {
+            (completed.toFloat() / total.toFloat())
+                .coerceIn(0f, 1f)
+        } else {
+            null
+        }
+
+    val statusText = when (phase) {
+        FavoritesZipImportPhase.READING_BACKUP -> {
+            if (completed > 0) {
+                "Reading backup • $completed entries checked"
+            } else {
+                "Reading backup"
+            }
+        }
+
+        FavoritesZipImportPhase.CHECKING_EXISTING_FAVORITES -> {
+            if (total > 0) {
+                "Checking existing favorites • $completed of $total"
+            } else {
+                "Checking existing favorites"
+            }
+        }
+
+        FavoritesZipImportPhase.IMPORTING_FAVORITES -> {
+            if (total > 0) {
+                "Importing favorites • $completed of $total"
+            } else {
+                "Importing favorites"
+            }
+        }
+
+        FavoritesZipImportPhase.PREPARING_SOURCE_LIBRARY -> {
+            if (total > 0) {
+                "Preparing source library • $completed of $total"
+            } else {
+                "Preparing source library"
+            }
+        }
+
+        FavoritesZipImportPhase.RESTORING_LINKS -> {
+            if (total > 0) {
+                "Restoring original-photo links • $completed of $total"
+            } else {
+                "Restoring original-photo links"
+            }
+        }
+
+        FavoritesZipImportPhase.COMPARING_SOURCE_PHOTOS -> {
+            if (total > 0) {
+                "Comparing source photos • $completed of $total"
+            } else {
+                "Comparing source photos"
+            }
+        }
+
+        FavoritesZipImportPhase.FINISHING -> {
+            "Finishing import"
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = {
+            /*
+             * Imports cannot be dismissed midway because files and mappings
+             * may still be actively written.
+             */
+        },
+        title = {
+            Text(
+                text = "Restoring Favorites",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (fraction == null) {
+                    Row(
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            color = themeColor,
+                            strokeWidth = 3.dp
+                        )
+
+                        Spacer(
+                            modifier = Modifier.width(12.dp)
+                        )
+
+                        Text(
+                            text = statusText,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                } else {
+                    Text(
+                        text = statusText,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(12.dp)
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(10.dp)
+                            .clip(
+                                RoundedCornerShape(999.dp)
+                            )
+                            .background(
+                                Color.White.copy(alpha = 0.12f)
+                            )
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(fraction)
+                                .fillMaxHeight()
+                                .background(themeColor)
+                        )
+                    }
+
+                    Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    Text(
+                        text = "${(fraction * 100f).toInt()}%",
+                        color = Color.Gray,
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                val currentFileName =
+                    progress?.currentFileName.orEmpty()
+
+                if (currentFileName.isNotBlank()) {
+                    Spacer(
+                        modifier = Modifier.height(12.dp)
+                    )
+
+                    Text(
+                        text = currentFileName,
+                        color = Color.Gray,
+                        style =
+                            MaterialTheme.typography.bodySmall,
+                        maxLines = 2
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.SpaceBetween
+                ) {
+                    ImportProgressCount(
+                        label = "Imported",
+                        value = progress?.importedCount ?: 0
+                    )
+
+                    ImportProgressCount(
+                        label = "Already there",
+                        value =
+                            progress
+                                ?.skippedDuplicateCount
+                                ?: 0
+                    )
+
+                    ImportProgressCount(
+                        label = "Failed",
+                        value = progress?.failedCount ?: 0
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
+
+                Text(
+                    text =
+                        "Keep PicRoulette open until the import finishes.",
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {}
+    )
+}
+
+@Composable
+private fun ImportProgressCount(
+    label: String,
+    value: Int
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = value.toString(),
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = label,
+            color = Color.Gray,
+            style = MaterialTheme.typography.labelSmall
+        )
     }
 }
 
