@@ -129,7 +129,13 @@ fun exportFavoritesZip(
                                 put(
                                     "hasSourceLink",
                                     mapping != null &&
-                                            mapping.originalUri.isNotBlank()
+                                        !mapping.isDeleted &&
+                                        mapping.originalUri.isNotBlank()
+                                )
+
+                                put(
+                                    "originalDeleted",
+                                    mapping?.isDeleted == true
                                 )
 
                                 put(
@@ -214,8 +220,8 @@ fun exportFavoritesZip(
             put(
                 "containsSourceLinks",
                 mappings.any {
-                    it.originalUri.isNotBlank() &&
-                            it.favoriteUri.isNotBlank()
+                    it.favoriteUri.isNotBlank() &&
+                        (it.isDeleted || it.originalUri.isNotBlank())
                 }
             )
 

@@ -150,3 +150,80 @@ suspend fun loadCachedPhotoLibrary(
             .toList()
     }.getOrDefault(emptyList())
 }
+
+private const val PHOTO_LIBRARY_FOLDER_CACHE_FILE = "photo_library_folder_cache.json"
+
+data class FolderCacheMergeResult(
+    val folderImages: Map<String, List<String>>,
+    val allImages: List<String>
+)
+
+/** Pure merge logic so failure handling can be unit tested without Android. */
+fun mergeFolderScanResults(
+    configuredFolderKeys: List<String>,
+    freshFolderImages: Map<String, List<String>>,
+    failedFolderKeys: Set<String>,
+    cachedFolderImages: Map<String, List<String>>
+): FolderCacheMergeResult {
+    val mergedByFolder = linkedMapOf<String, List<String>>()
+
+    configuredFolderKeys.forEach { folderKey ->
+        val images = when {
+            folderKey in failedFolderKeys -> cachedFolderImages[folderKey].orEmpty()
+            freshFolderImages.containsKey(folderKey) -> freshFolderImages[folderKey].orEmpty()
+            else -> emptyList()
+        }
+
+        mergedByFolder[folderKey] = images.distinct()
+    }
+
+    return FolderCacheMergeResult(
+        folderImages = mergedByFolder,
+        allImages = mergedByFolder.values.flatten().distinct()
+    )
+}
+
+suspend fun saveCachedPhotoLibraryByFolder(
+    context: Context,
+    folderImages: Map<String, List<Uri>>
+) = withContext(Dispatchers.IO) {
+    runCatching {
+        val root = org.json.JSONObject()
+        folderImages.forEach { (folderUri, images) ->
+            val array = org.json.JSONArray()
+            images.distinctBy { it.toString() }.forEach { uri ->
+                array.put(uri.toString())
+            }
+            root.put(folderUri, array)
+        }
+
+        File(context.filesDir, PHOTO_LIBRARY_FOLDER_CACHE_FILE)
+            .writeText(root.toString())
+    }
+}
+
+suspend fun loadCachedPhotoLibraryByFolder(
+    context: Context
+): Map<String, List<Uri>> = withContext(Dispatchers.IO) {
+    val file = File(context.filesDir, PHOTO_LIBRARY_FOLDER_CACHE_FILE)
+    if (!file.exists()) return@withContext emptyMap()
+
+    runCatching {
+        val root = org.json.JSONObject(file.readText())
+        val result = linkedMapOf<String, List<Uri>>()
+        val keys = root.keys()
+
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val array = root.optJSONArray(key) ?: continue
+            val images = buildList {
+                for (index in 0 until array.length()) {
+                    val value = array.optString(index)
+                    if (value.isNotBlank()) add(Uri.parse(value))
+                }
+            }
+            result[key] = images.distinctBy { it.toString() }
+        }
+        result
+    }.getOrDefault(emptyMap())
+}

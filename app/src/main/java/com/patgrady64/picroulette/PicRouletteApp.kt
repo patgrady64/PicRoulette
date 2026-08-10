@@ -2,8 +2,8 @@ package com.patgrady64.picroulette
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -74,6 +74,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -212,6 +213,20 @@ fun PicRouletteApp(themeColor: Color) {
     var renameErrorMessage by remember { mutableStateOf<String?>(null) }
     var isRenaming by remember { mutableStateOf(false) }
     var metadataRefreshVersion by remember { mutableIntStateOf(0) }
+    var currentPhotoMetadata by remember {
+        mutableStateOf<PhotoMetadataSnapshot?>(null)
+    }
+    var currentPhotoMetadataUri by remember { mutableStateOf<String?>(null) }
+
+    /*
+     * If Coil cannot load a photo, keep the viewer responsive while a
+     * trustworthy folder/favorites refresh decides whether the URI is truly
+     * gone or only temporarily unavailable.
+     */
+    var unavailablePhotoUri by remember { mutableStateOf<Uri?>(null) }
+    var missingPhotoRecoveryAttemptedUri by remember {
+        mutableStateOf<String?>(null)
+    }
 
     /*
      * Favorites Viewer only: tapping the filled heart arms the current
@@ -241,6 +256,22 @@ fun PicRouletteApp(themeColor: Color) {
 
     val scale = remember { mutableFloatStateOf(1f) }
     val offset = remember { mutableStateOf(Offset.Zero) }
+    val currentViewerUri =
+        activeSessionList.getOrNull(currentIndex.intValue)
+    val activePhotoMetadata =
+        currentPhotoMetadata.takeIf {
+            currentPhotoMetadataUri == currentViewerUri?.toString()
+        }
+
+    LaunchedEffect(currentViewerUri, metadataRefreshVersion) {
+        currentPhotoMetadata = null
+        currentPhotoMetadataUri = null
+        val uri = currentViewerUri ?: return@LaunchedEffect
+        val metadata = queryPhotoMetadata(context, uri)
+        currentPhotoMetadata = metadata
+        currentPhotoMetadataUri = uri.toString()
+    }
+
     LaunchedEffect(showShuffleToast) {
         if (showShuffleToast) {
             delay(1800)
@@ -269,10 +300,60 @@ fun PicRouletteApp(themeColor: Color) {
         }
     }
 
-    val transformState = rememberTransformableState { z, o, _ ->
-        if (!uiVisible) {
-            scale.floatValue *= z
-            offset.value += o
+    val transformUiVisible by rememberUpdatedState(uiVisible)
+    val transformMetadata by rememberUpdatedState(activePhotoMetadata)
+    val transformContainerSize by rememberUpdatedState(containerSize)
+    val transformDisplayMode by rememberUpdatedState(currentPhotoDisplayMode)
+
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        if (!transformUiVisible) {
+            val newZoom = clampPhotoZoom(
+                currentZoom = scale.floatValue,
+                zoomChange = zoomChange
+            )
+            scale.floatValue = newZoom
+
+            val imageWidth = transformMetadata?.width
+            val imageHeight = transformMetadata?.height
+
+            offset.value =
+                if (imageWidth != null && imageHeight != null) {
+                    clampPhotoOffset(
+                        proposedOffset = offset.value + panChange,
+                        imageWidth = imageWidth,
+                        imageHeight = imageHeight,
+                        containerSize = transformContainerSize,
+                        userZoom = newZoom,
+                        displayMode = transformDisplayMode
+                    )
+                } else {
+                    Offset.Zero
+                }
+        }
+    }
+
+    fun reconcileActiveViewerSession(availableUris: List<Uri>) {
+        if (!isPlaying || activeSessionList.isEmpty()) {
+            return
+        }
+
+        val result = reconcilePhotoSession(
+            sessionUris = activeSessionList.map { it.toString() },
+            availableUris = availableUris
+                .mapTo(mutableSetOf()) { it.toString() },
+            oldCurrentIndex = currentIndex.intValue
+        )
+
+        if (result.removedCount == 0) {
+            return
+        }
+
+        activeSessionList.clear()
+        activeSessionList.addAll(result.sessionUris.map(Uri::parse))
+        currentIndex.intValue = result.currentIndex
+
+        if (activeSessionList.isEmpty()) {
+            isPlaying = false
         }
     }
 
@@ -287,21 +368,7 @@ fun PicRouletteApp(themeColor: Color) {
         val thisRefreshGeneration = favoritesRefreshGeneration
 
         scope.launch(Dispatchers.IO) {
-            val diskFiles = getFavoritesList(context)
-            val diskFavoriteUris =
-                diskFiles.mapTo(mutableSetOf()) {
-                    it.mediaUri.toString()
-                }
-
-            val staleUrisFromThisSnapshot =
-                mappingsAtRefreshStart
-                    .filter { mapping ->
-                        mapping.favoriteUri.isBlank() ||
-                            mapping.favoriteUri !in diskFavoriteUris
-                    }
-                    .mapTo(mutableSetOf()) { mapping ->
-                        mapping.favoriteUri
-                    }
+            val diskResult = readFavoritesList(context)
 
             withContext(Dispatchers.Main) {
                 /*
@@ -313,21 +380,41 @@ fun PicRouletteApp(themeColor: Color) {
                     return@withContext
                 }
 
+                val diskFiles = diskResult.getOrElse {
+                    snackbarHostState.showSnackbar(
+                        "Favorites couldn't be refreshed. Existing favorites were kept."
+                    )
+                    onResult(favoriteFiles)
+                    return@withContext
+                }
+
+                val diskFavoriteUris =
+                    diskFiles.mapTo(mutableSetOf()) {
+                        it.mediaUri.toString()
+                    }
+
                 /*
                  * Apply the cleanup to the latest in-memory list, not the old
                  * snapshot. New or replaced mappings therefore survive even
                  * if this refresh began before they were created.
                  */
-                val cleanedMappings =
-                    favoriteMappings.filterNot { mapping ->
-                        mapping.favoriteUri in staleUrisFromThisSnapshot
-                    }.toMutableList()
+                val cleanup = cleanStaleFavoriteMappings(
+                    mappingsAtRefreshStart = mappingsAtRefreshStart,
+                    latestMappings = favoriteMappings,
+                    diskFavoriteUris = diskFavoriteUris
+                )
 
-                if (cleanedMappings != favoriteMappings) {
-                    favoriteMappings = cleanedMappings
+                if (cleanup.changed) {
+                    favoriteMappings = cleanup.mappings
                     saveFavoriteMappings(
                         context,
-                        cleanedMappings
+                        cleanup.mappings
+                    )
+                }
+
+                if (isPlaying && isFavoritesMode) {
+                    reconcileActiveViewerSession(
+                        diskFiles.map { it.mediaUri }
                     )
                 }
 
@@ -344,7 +431,10 @@ fun PicRouletteApp(themeColor: Color) {
         scanCurrentFolder = ""
 
         try {
-            val scannedImages = scanPhotoLibrary(
+            val cachedByFolder = loadCachedPhotoLibraryByFolder(context)
+            val legacyCachedImages = loadCachedPhotoLibrary(context)
+
+            val scanResult = scanPhotoLibrary(
                 context = context,
                 folders = folderConfigs
             ) { progress ->
@@ -354,11 +444,68 @@ fun PicRouletteApp(themeColor: Color) {
                 scanCurrentFolder = progress.currentFolderName
             }
 
-            pickedFolderImages.value = scannedImages
+            val configuredKeys = folderConfigs.map { it.uri.toString() }
+            val freshStrings = scanResult.imagesByFolder.mapValues { entry ->
+                entry.value.map { it.toString() }
+            }
+            val cachedStrings = cachedByFolder.mapValues { entry ->
+                entry.value.map { it.toString() }
+            }
+            val failedKeys = scanResult.failures
+                .mapTo(mutableSetOf()) { it.folderUri.toString() }
+
+            val merged = mergeFolderScanResults(
+                configuredFolderKeys = configuredKeys,
+                freshFolderImages = freshStrings,
+                failedFolderKeys = failedKeys,
+                cachedFolderImages = cachedStrings
+            )
+
+            val hasUncachedFailure = failedKeys.any { it !in cachedStrings }
+            val fallbackFromLegacy =
+                if (hasUncachedFailure) legacyCachedImages else emptyList()
+
+            val mergedImages = (
+                merged.allImages.map(Uri::parse) + fallbackFromLegacy
+            ).distinctBy { it.toString() }
+
+            pickedFolderImages.value = mergedImages
+
+            if (isPlaying && !isFavoritesMode) {
+                reconcileActiveViewerSession(mergedImages)
+            }
+
+            val folderCacheToPersist = linkedMapOf<String, List<Uri>>()
+            configuredKeys.forEach { folderKey ->
+                if (folderKey in failedKeys) {
+                    cachedByFolder[folderKey]?.let { cachedImages ->
+                        folderCacheToPersist[folderKey] = cachedImages
+                    }
+                } else {
+                    folderCacheToPersist[folderKey] =
+                        scanResult.imagesByFolder[folderKey].orEmpty()
+                }
+            }
+
+            saveCachedPhotoLibraryByFolder(
+                context = context,
+                folderImages = folderCacheToPersist
+            )
             saveCachedPhotoLibrary(
                 context = context,
-                images = scannedImages
+                images = mergedImages
             )
+
+            if (scanResult.failures.isNotEmpty()) {
+                val count = scanResult.failures.size
+                snackbarHostState.showSnackbar(
+                    if (count == 1) {
+                        "1 library folder could not be scanned. Last-known photos were kept when available."
+                    } else {
+                        "$count library folders could not be scanned. Last-known photos were kept when available."
+                    }
+                )
+            }
         } finally {
             isScanning.value = false
             scanPhotosFound = pickedFolderImages.value.size
@@ -808,6 +955,23 @@ fun PicRouletteApp(themeColor: Color) {
         offset.value = Offset.Zero;
     }
 
+    BackHandler(enabled = isPlaying) {
+        when {
+            isReplacingFavorite || isRenaming -> Unit
+            showDeleteDialog -> showDeleteDialog = false
+            showRenameDialog -> {
+                showRenameDialog = false
+                renameErrorMessage = null
+            }
+            showMetadata -> showMetadata = false
+            else -> {
+                pendingFavoriteReplacementUri = null
+                uiVisible = false
+                isPlaying = false
+            }
+        }
+    }
+
     Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
         if (!isPlaying) {
             // --- MAIN DASHBOARD UI ---
@@ -1099,23 +1263,20 @@ fun PicRouletteApp(themeColor: Color) {
                             triggerVibration(context, VibrationStyle.LONG); uiVisible = !uiVisible
                         })
             ) {
-                val currentUri = activeSessionList.getOrNull(currentIndex.intValue)
+                val currentUri = currentViewerUri
                 if (currentUri != null) {
 
-                    val currentFileDetails = remember(
-                        currentUri,
-                        metadataRefreshVersion
-                    ) {
-                        queryPhotoFileDetails(
-                            context = context,
-                            uri = currentUri
-                        )
-                    }
+                    val currentFileDetails =
+                        activePhotoMetadata?.fileDetails
+                            ?: PhotoFileDetails(
+                                displayName = currentUri.lastPathSegment
+                                    ?: "Photo",
+                                sizeBytes = null
+                            )
 
-                    val currentFileName =
-                        currentFileDetails.displayName
+                    val currentFileName = currentFileDetails.displayName
 
-                    val displayFileName = remember(
+                    val currentFavoriteMapping = remember(
                         currentUri,
                         isFavoritesMode,
                         favoriteMappings
@@ -1123,7 +1284,20 @@ fun PicRouletteApp(themeColor: Color) {
                         if (isFavoritesMode) {
                             favoriteMappings.find {
                                 it.favoriteUri == currentUri.toString()
-                            }?.originalFileName
+                            }
+                        } else {
+                            null
+                        }
+                    }
+
+                    val displayFileName = remember(
+                        currentUri,
+                        currentFileName,
+                        isFavoritesMode,
+                        currentFavoriteMapping
+                    ) {
+                        if (isFavoritesMode) {
+                            currentFavoriteMapping?.originalFileName
                                 ?: currentFileName
                         } else {
                             currentFileName
@@ -1142,10 +1316,12 @@ fun PicRouletteApp(themeColor: Color) {
                             pendingFavoriteReplacementUri != currentUri
                         } else {
                             favoriteMappings.any {
-                                sameImage(
-                                    Uri.parse(it.originalUri),
-                                    currentUri
-                                ) && it.favoriteUri.isNotEmpty()
+                                !it.isDeleted &&
+                                    sameImage(
+                                        Uri.parse(it.originalUri),
+                                        currentUri
+                                    ) &&
+                                    it.favoriteUri.isNotEmpty()
                             }
                         }
 
@@ -1155,6 +1331,8 @@ fun PicRouletteApp(themeColor: Color) {
                      */
                     LaunchedEffect(currentUri, isFavoritesMode) {
                         pendingFavoriteReplacementUri = null
+                        unavailablePhotoUri = null
+                        missingPhotoRecoveryAttemptedUri = null
                     }
 
                     /*
@@ -1185,25 +1363,132 @@ fun PicRouletteApp(themeColor: Color) {
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f)
                     )
+                    val viewportGeometry =
+                        activePhotoMetadata?.let { metadata ->
+                            val width = metadata.width
+                            val height = metadata.height
+                            if (width != null && height != null) {
+                                calculatePhotoViewportGeometry(
+                                    imageWidth = width,
+                                    imageHeight = height,
+                                    containerSize = containerSize,
+                                    userZoom = scale.floatValue,
+                                    displayMode = currentPhotoDisplayMode
+                                )
+                            } else {
+                                null
+                            }
+                        }
+
+                    val renderedScale =
+                        (viewportGeometry?.displayModeMultiplier ?: 1f) *
+                            scale.floatValue
+
                     AsyncImage(
                         model = currentUri,
-                        contentDescription = null,
+                        contentDescription = "Current photo",
                         modifier = Modifier.fillMaxSize().graphicsLayer(
-                            scaleX = scale.floatValue,
-                            scaleY = scale.floatValue,
+                            scaleX = renderedScale,
+                            scaleY = renderedScale,
                             translationX = offset.value.x,
                             translationY = offset.value.y
                         ),
-                        contentScale =
-                            if (
-                                currentPhotoDisplayMode ==
-                                PhotoDisplayMode.FIT
-                            ) {
-                                ContentScale.Fit
-                            } else {
-                                ContentScale.Crop
+                        contentScale = ContentScale.Fit,
+                        onSuccess = {
+                            if (unavailablePhotoUri == currentUri) {
+                                unavailablePhotoUri = null
                             }
+                            if (
+                                missingPhotoRecoveryAttemptedUri ==
+                                currentUri.toString()
+                            ) {
+                                missingPhotoRecoveryAttemptedUri = null
+                            }
+                        },
+                        onError = {
+                            val failedUriString = currentUri.toString()
+
+                            if (
+                                missingPhotoRecoveryAttemptedUri !=
+                                failedUriString
+                            ) {
+                                missingPhotoRecoveryAttemptedUri =
+                                    failedUriString
+                                unavailablePhotoUri = currentUri
+
+                                if (isFavoritesMode) {
+                                    refreshFavs(context) { updatedFavorites ->
+                                        favoriteFiles = updatedFavorites
+
+                                        if (
+                                            activeSessionList.any {
+                                                it == currentUri
+                                            }
+                                        ) {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar(
+                                                    "Photo couldn't be loaded right now. You can skip it and try again later."
+                                                )
+                                            }
+                                        } else {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar(
+                                                    "Photo is no longer available and was removed from this session."
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    scope.launch {
+                                        scanAllFolders()
+
+                                        if (
+                                            activeSessionList.any {
+                                                it == currentUri
+                                            }
+                                        ) {
+                                            snackbarHostState.showSnackbar(
+                                                "Photo couldn't be loaded right now. You can skip it and try again later."
+                                            )
+                                        } else {
+                                            snackbarHostState.showSnackbar(
+                                                "Photo is no longer available and was removed from this session."
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     )
+
+                    if (unavailablePhotoUri == currentUri) {
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.72f),
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(32.dp)
+                                .zIndex(1f)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    "Photo couldn't be loaded",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "PicRoulette is checking whether the file was moved or deleted.",
+                                    color = Color.LightGray,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    }
 
                     /*
                      * Heart-only notification. This is separate from the full
@@ -1407,26 +1692,24 @@ fun PicRouletteApp(themeColor: Color) {
                                                                 }
 
                                                                 if (existingMapping != null) {
-                                                                    favoriteMappings =
-                                                                        favoriteMappings.map { mapping ->
-                                                                            if (
-                                                                                mapping.favoriteUri ==
-                                                                                oldFavoriteUri.toString()
-                                                                            ) {
-                                                                                mapping.copy(
-                                                                                    favoriteUri =
-                                                                                        replacementUri
-                                                                                            .toString()
-                                                                                )
-                                                                            } else {
-                                                                                mapping
-                                                                            }
-                                                                        }.toMutableList()
+                                                                    val mappingUpdate =
+                                                                        replaceFavoriteMappingUri(
+                                                                            mappings = favoriteMappings,
+                                                                            oldFavoriteUri =
+                                                                                oldFavoriteUri.toString(),
+                                                                            newFavoriteUri =
+                                                                                replacementUri.toString()
+                                                                        )
 
-                                                                    saveFavoriteMappings(
-                                                                        context,
-                                                                        favoriteMappings
-                                                                    )
+                                                                    favoriteMappings =
+                                                                        mappingUpdate.mappings
+
+                                                                    if (mappingUpdate.changed) {
+                                                                        saveFavoriteMappings(
+                                                                            context,
+                                                                            favoriteMappings
+                                                                        )
+                                                                    }
                                                                 }
 
                                                                 if (
@@ -1460,10 +1743,11 @@ fun PicRouletteApp(themeColor: Color) {
                                                         if (isHeartFilled) {
                                                             val mapping =
                                                                 favoriteMappings.find {
-                                                                    sameImage(
-                                                                        Uri.parse(it.originalUri),
-                                                                        currentUri
-                                                                    )
+                                                                    !it.isDeleted &&
+                                                                        sameImage(
+                                                                            Uri.parse(it.originalUri),
+                                                                            currentUri
+                                                                        )
                                                                 }
 
                                                             mapping?.let { mapToDelete ->
@@ -1541,6 +1825,8 @@ fun PicRouletteApp(themeColor: Color) {
                                                                 if (existingIndex >= 0) {
                                                                     updated[existingIndex] =
                                                                         updated[existingIndex].copy(
+                                                                            originalUri =
+                                                                                sourceUri.toString(),
                                                                             favoriteUri =
                                                                                 favUri.toString(),
                                                                             originalFileName =
@@ -1550,7 +1836,8 @@ fun PicRouletteApp(themeColor: Color) {
                                                                             originalSha256 =
                                                                                 originalSha256,
                                                                             dateAdded =
-                                                                                System.currentTimeMillis()
+                                                                                System.currentTimeMillis(),
+                                                                            isDeleted = false
                                                                         )
                                                                 } else {
                                                                     updated.add(
@@ -1717,22 +2004,6 @@ fun PicRouletteApp(themeColor: Color) {
                                         .clickable { showMetadata = false },
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    val imageBounds = remember(currentUri) {
-                                        BitmapFactory.Options().apply {
-                                            inJustDecodeBounds = true
-
-                                            context.contentResolver
-                                                .openInputStream(currentUri)
-                                                ?.use { input ->
-                                                    BitmapFactory.decodeStream(
-                                                        input,
-                                                        null,
-                                                        this
-                                                    )
-                                                }
-                                        }
-                                    }
-
                                     val sizeText =
                                         currentFileDetails.sizeBytes?.let { bytes ->
                                             if (bytes >= 1024L * 1024L) {
@@ -1778,13 +2049,34 @@ fun PicRouletteApp(themeColor: Color) {
                                             MetadataRow("Size", sizeText)
                                             MetadataRow(
                                                 "Resolution",
-                                                "${imageBounds.outWidth} x " +
-                                                    "${imageBounds.outHeight} px"
+                                                if (
+                                                    activePhotoMetadata?.width != null &&
+                                                    activePhotoMetadata?.height != null
+                                                ) {
+                                                    "${activePhotoMetadata?.width} x " +
+                                                        "${activePhotoMetadata?.height} px"
+                                                } else {
+                                                    "Unknown"
+                                                }
                                             )
                                             MetadataRow(
                                                 "URI Path",
                                                 currentUri.path ?: "N/A"
                                             )
+
+                                            if (isFavoritesMode) {
+                                                MetadataRow(
+                                                    "Original Photo",
+                                                    when {
+                                                        currentFavoriteMapping?.isDeleted == true ->
+                                                            "Deleted"
+                                                        currentFavoriteMapping != null ->
+                                                            currentFavoriteMapping.originalFileName
+                                                        else ->
+                                                            "Link unavailable"
+                                                    }
+                                                )
+                                            }
 
                                             Spacer(Modifier.height(24.dp))
 
@@ -1992,14 +2284,9 @@ fun PicRouletteApp(themeColor: Color) {
                                                         }
 
                                                         if (isFavoritesMode) {
-                                                            favoriteFiles =
-                                                                withContext(
-                                                                    Dispatchers.IO
-                                                                ) {
-                                                                    getFavoritesList(
-                                                                        context
-                                                                    )
-                                                                }
+                                                            refreshFavs(context) {
+                                                                favoriteFiles = it
+                                                            }
                                                         } else {
                                                             pickedFolderImages.value =
                                                                 pickedFolderImages.value
@@ -2090,6 +2377,39 @@ fun PicRouletteApp(themeColor: Color) {
                                                         )
 
                                                     deleteResult.onSuccess {
+                                                        val linkedOriginalUris =
+                                                            favoriteMappings
+                                                                .filter { mapping ->
+                                                                    !mapping.isDeleted &&
+                                                                        runCatching {
+                                                                            sameImage(
+                                                                                Uri.parse(
+                                                                                    mapping.originalUri
+                                                                                ),
+                                                                                currentUri
+                                                                            )
+                                                                        }.getOrDefault(false)
+                                                                }
+                                                                .mapTo(mutableSetOf()) {
+                                                                    it.originalUri
+                                                                }
+
+                                                        val deletionUpdate =
+                                                            markOriginalsDeleted(
+                                                                mappings = favoriteMappings,
+                                                                deletedOriginalUris =
+                                                                    linkedOriginalUris
+                                                            )
+
+                                                        if (deletionUpdate.changed) {
+                                                            favoriteMappings =
+                                                                deletionUpdate.mappings
+                                                            saveFavoriteMappings(
+                                                                context,
+                                                                favoriteMappings
+                                                            )
+                                                        }
+
                                                         activeSessionList.remove(
                                                             currentUri
                                                         )

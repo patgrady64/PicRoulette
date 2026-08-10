@@ -1,10 +1,7 @@
 package com.patgrady64.picroulette
 
 import android.content.ContentUris
-import android.content.ContentValues
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.os.VibrationEffect
@@ -31,17 +28,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 
 fun saveFolders(context: Context, folders: List<FolderConfig>) {
     val prefs = context.getSharedPreferences("PicRoulettePrefs", Context.MODE_PRIVATE)
@@ -120,25 +114,58 @@ private fun scanDirectory(context: Context, treeUri: Uri, parentDocId: String, r
     }
 }
 
-fun getFavoritesList(context: Context): List<FavoriteFile> {
+fun readFavoritesList(
+    context: Context
+): Result<List<FavoriteFile>> = runCatching {
     val list = mutableListOf<FavoriteFile>()
-    val projection = arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DISPLAY_NAME)
+    val projection = arrayOf(
+        MediaStore.Images.Media._ID,
+        MediaStore.Images.Media.DISPLAY_NAME
+    )
     val selection = "${MediaStore.Images.Media.RELATIVE_PATH} = ?"
     val args = arrayOf("Pictures/PR_FAVS/")
-    try {
-        context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, selection, args, null)?.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-            while (cursor.moveToNext()) {
-                val uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cursor.getLong(idCol))
-                list.add(FavoriteFile(cursor.getString(nameCol), uri))
-            }
+
+    val cursor = context.contentResolver.query(
+        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+        projection,
+        selection,
+        args,
+        null
+    ) ?: throw IOException("The Favorites folder could not be read.")
+
+    cursor.use {
+        val idCol = it.getColumnIndexOrThrow(
+            MediaStore.Images.Media._ID
+        )
+        val nameCol = it.getColumnIndexOrThrow(
+            MediaStore.Images.Media.DISPLAY_NAME
+        )
+
+        while (it.moveToNext()) {
+            val uri = ContentUris.withAppendedId(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                it.getLong(idCol)
+            )
+            list.add(
+                FavoriteFile(
+                    fileNameOnDisk = it.getString(nameCol),
+                    mediaUri = uri
+                )
+            )
         }
-    } catch (exception: Exception) {
-        Log.e("PR_FAV", "Could not read the Favorites folder", exception)
     }
-    return list
+
+    list
+}.onFailure { exception ->
+    Log.e(
+        "PR_FAV",
+        "Could not read the Favorites folder",
+        exception
+    )
 }
+
+fun getFavoritesList(context: Context): List<FavoriteFile> =
+    readFavoritesList(context).getOrDefault(emptyList())
 
 fun saveFavoriteMappings(
     context: Context,
@@ -232,246 +259,6 @@ fun getFavoriteMappings(
     }
 
     return list
-}
-
-suspend fun saveToFavoritesFolder(
-    context: Context,
-    sourceUri: Uri,
-    fileName: String,
-    scale: Float,
-    offset: Offset,
-    containerSize: IntSize,
-    displayMode: PhotoDisplayMode = PhotoDisplayMode.FIT
-): Uri? {
-    return withContext(Dispatchers.IO) {
-        var sourceBitmap: Bitmap? = null
-        var orientedBitmap: Bitmap? = null
-        var croppedBitmap: Bitmap? = null
-        var insertedUri: Uri? = null
-
-        try {
-            if (
-                containerSize.width <= 0 ||
-                containerSize.height <= 0
-            ) {
-                return@withContext null
-            }
-
-            val decodedBitmap = context.contentResolver
-                .openInputStream(sourceUri)
-                ?.use { input ->
-                    BitmapFactory.decodeStream(input)
-                }
-                ?: return@withContext null
-
-            sourceBitmap = decodedBitmap
-
-            val orientation = context.contentResolver
-                .openInputStream(sourceUri)
-                ?.use { input ->
-                    androidx.exifinterface.media.ExifInterface(input)
-                        .getAttributeInt(
-                            androidx.exifinterface.media.ExifInterface
-                                .TAG_ORIENTATION,
-                            androidx.exifinterface.media.ExifInterface
-                                .ORIENTATION_NORMAL
-                        )
-                }
-                ?: androidx.exifinterface.media.ExifInterface
-                    .ORIENTATION_NORMAL
-
-            val matrix = android.graphics.Matrix()
-            when (orientation) {
-                androidx.exifinterface.media.ExifInterface
-                    .ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-
-                androidx.exifinterface.media.ExifInterface
-                    .ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-
-                androidx.exifinterface.media.ExifInterface
-                    .ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-            }
-
-            val workingBitmap =
-                if (matrix.isIdentity) {
-                    decodedBitmap
-                } else {
-                    Bitmap.createBitmap(
-                        decodedBitmap,
-                        0,
-                        0,
-                        decodedBitmap.width,
-                        decodedBitmap.height,
-                        matrix,
-                        true
-                    )
-                }
-
-            orientedBitmap = workingBitmap
-
-            val imageWidth = workingBitmap.width.toFloat()
-            val imageHeight = workingBitmap.height.toFloat()
-            val viewWidth = containerSize.width.toFloat()
-            val viewHeight = containerSize.height.toFloat()
-
-            val baseScale =
-                if (displayMode == PhotoDisplayMode.FIT) {
-                    minOf(
-                        viewWidth / imageWidth,
-                        viewHeight / imageHeight
-                    )
-                } else {
-                    maxOf(
-                        viewWidth / imageWidth,
-                        viewHeight / imageHeight
-                    )
-                }
-
-            val totalScale = (baseScale * scale)
-                .coerceAtLeast(0.0001f)
-            val cropWidth = (viewWidth / totalScale)
-                .coerceAtMost(imageWidth)
-            val cropHeight = (viewHeight / totalScale)
-                .coerceAtMost(imageHeight)
-
-            val centerX =
-                imageWidth / 2f - offset.x / totalScale
-            val centerY =
-                imageHeight / 2f - offset.y / totalScale
-
-            val maxLeft =
-                (imageWidth - cropWidth).toInt().coerceAtLeast(0)
-            val maxTop =
-                (imageHeight - cropHeight).toInt().coerceAtLeast(0)
-
-            val left = (centerX - cropWidth / 2f)
-                .toInt()
-                .coerceIn(0, maxLeft)
-            val top = (centerY - cropHeight / 2f)
-                .toInt()
-                .coerceIn(0, maxTop)
-
-            val finalBitmap = Bitmap.createBitmap(
-                workingBitmap,
-                left,
-                top,
-                cropWidth.toInt().coerceAtLeast(1),
-                cropHeight.toInt().coerceAtLeast(1)
-            )
-
-            croppedBitmap = finalBitmap
-
-            val originalStem = splitFileName(fileName).stem
-                .replace(Regex("[^A-Za-z0-9 _-]"), "")
-                .trim()
-                .take(40)
-                .ifBlank { "favorite" }
-
-            val timestamp = java.text.SimpleDateFormat(
-                "yyyyMMddHHmmssSSS",
-                java.util.Locale.US
-            ).format(java.util.Date())
-
-            val finalName = "${originalStem}_$timestamp.jpg"
-
-            val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
-                put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-                put(
-                    MediaStore.MediaColumns.RELATIVE_PATH,
-                    "Pictures/PR_FAVS"
-                )
-                put(MediaStore.MediaColumns.IS_PENDING, 1)
-            }
-
-            insertedUri = context.contentResolver.insert(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                values
-            ) ?: return@withContext null
-
-            val written = context.contentResolver
-                .openOutputStream(insertedUri)
-                ?.use { output ->
-                    finalBitmap.compress(
-                        Bitmap.CompressFormat.JPEG,
-                        95,
-                        output
-                    )
-                } == true
-
-            if (!written) {
-                context.contentResolver.delete(
-                    insertedUri,
-                    null,
-                    null
-                )
-                insertedUri = null
-            } else {
-                val publishedRows =
-                    context.contentResolver.update(
-                        insertedUri,
-                        ContentValues().apply {
-                            put(MediaStore.MediaColumns.IS_PENDING, 0)
-                        },
-                        null,
-                        null
-                    )
-
-                if (publishedRows <= 0) {
-                    context.contentResolver.delete(
-                        insertedUri,
-                        null,
-                        null
-                    )
-                    insertedUri = null
-                }
-            }
-
-            insertedUri
-        } catch (exception: Exception) {
-            insertedUri?.let { failedUri ->
-                runCatching {
-                    context.contentResolver.delete(
-                        failedUri,
-                        null,
-                        null
-                    )
-                }
-            }
-
-            Log.e(
-                "PR_FAV",
-                "Could not save favorite from $sourceUri",
-                exception
-            )
-            null
-        } finally {
-            croppedBitmap?.let { bitmap ->
-                if (!bitmap.isRecycled) {
-                    bitmap.recycle()
-                }
-            }
-
-            orientedBitmap?.let { bitmap ->
-                if (
-                    bitmap !== croppedBitmap &&
-                    !bitmap.isRecycled
-                ) {
-                    bitmap.recycle()
-                }
-            }
-
-            sourceBitmap?.let { bitmap ->
-                if (
-                    bitmap !== orientedBitmap &&
-                    bitmap !== croppedBitmap &&
-                    !bitmap.isRecycled
-                ) {
-                    bitmap.recycle()
-                }
-            }
-        }
-    }
 }
 
 @Composable

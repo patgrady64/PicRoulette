@@ -66,7 +66,8 @@ private data class BackupManifestFile(
     val originalFileName: String,
     val originalRelativePath: String,
     val originalSha256: String,
-    val hasSourceLink: Boolean
+    val hasSourceLink: Boolean,
+    val originalDeleted: Boolean
 )
 
 private data class BackupManifest(
@@ -561,6 +562,29 @@ private fun restoreSourceLinks(
             return@restoredLoop
         }
 
+        if (manifestFile.originalDeleted) {
+            updatedMappings.add(
+                FavoriteMapping(
+                    originalUri = "",
+                    favoriteUri = favoriteUriString,
+                    originalFileName = manifestFile.originalFileName,
+                    originalRelativePath = manifestFile.originalRelativePath,
+                    originalSha256 = manifestFile.originalSha256,
+                    dateAdded = System.currentTimeMillis(),
+                    isDeleted = true
+                )
+            )
+
+            reportProgress(
+                FavoritesZipImportPhase.RESTORING_LINKS,
+                restoredIndex + 1,
+                totalLinks,
+                currentFileName
+            )
+
+            return@restoredLoop
+        }
+
         val hasPortableSourceData =
             manifestFile.hasSourceLink ||
                     manifestFile.originalUri.isNotBlank() ||
@@ -940,6 +964,11 @@ private fun readBackupManifest(
                     hasSourceLink =
                         fileObject.optBoolean(
                             "hasSourceLink",
+                            false
+                        ),
+                    originalDeleted =
+                        fileObject.optBoolean(
+                            "originalDeleted",
                             false
                         )
                 )

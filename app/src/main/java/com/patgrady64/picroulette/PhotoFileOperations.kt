@@ -2,10 +2,12 @@ package com.patgrady64.picroulette
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import androidx.exifinterface.media.ExifInterface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -14,6 +16,61 @@ data class PhotoFileDetails(
     val displayName: String,
     val sizeBytes: Long?
 )
+
+
+data class PhotoMetadataSnapshot(
+    val fileDetails: PhotoFileDetails,
+    val width: Int?,
+    val height: Int?
+)
+
+suspend fun queryPhotoMetadata(
+    context: Context,
+    uri: Uri
+): PhotoMetadataSnapshot = withContext(Dispatchers.IO) {
+    val details = queryPhotoFileDetails(context, uri)
+
+    val bounds = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true
+    }
+
+    runCatching {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            BitmapFactory.decodeStream(input, null, bounds)
+        }
+    }
+
+    var width = bounds.outWidth.takeIf { it > 0 }
+    var height = bounds.outHeight.takeIf { it > 0 }
+
+    if (width != null && height != null) {
+        val orientation = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                ExifInterface(input).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
+            }
+        }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
+
+        if (
+            orientation == ExifInterface.ORIENTATION_ROTATE_90 ||
+            orientation == ExifInterface.ORIENTATION_ROTATE_270 ||
+            orientation == ExifInterface.ORIENTATION_TRANSPOSE ||
+            orientation == ExifInterface.ORIENTATION_TRANSVERSE
+        ) {
+            val oldWidth = width
+            width = height
+            height = oldWidth
+        }
+    }
+
+    PhotoMetadataSnapshot(
+        fileDetails = details,
+        width = width,
+        height = height
+    )
+}
 
 data class PhotoRenameResult(
     val renamedUri: Uri? = null,

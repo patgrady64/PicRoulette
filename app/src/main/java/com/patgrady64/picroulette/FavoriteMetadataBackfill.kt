@@ -43,8 +43,9 @@ suspend fun backfillFavoriteMappingMetadata(
                 updatedMappings[index]
 
             val alreadyComplete =
-                existing.originalRelativePath.isNotBlank() &&
-                        existing.originalSha256.isNotBlank()
+                existing.isDeleted ||
+                    (existing.originalRelativePath.isNotBlank() &&
+                        existing.originalSha256.isNotBlank())
 
             if (alreadyComplete) {
                 alreadyCompleteCount++
