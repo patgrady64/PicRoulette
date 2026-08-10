@@ -407,14 +407,24 @@ suspend fun saveToFavoritesFolder(
                 )
                 insertedUri = null
             } else {
-                context.contentResolver.update(
-                    insertedUri,
-                    ContentValues().apply {
-                        put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    },
-                    null,
-                    null
-                )
+                val publishedRows =
+                    context.contentResolver.update(
+                        insertedUri,
+                        ContentValues().apply {
+                            put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        },
+                        null,
+                        null
+                    )
+
+                if (publishedRows <= 0) {
+                    context.contentResolver.delete(
+                        insertedUri,
+                        null,
+                        null
+                    )
+                    insertedUri = null
+                }
             }
 
             insertedUri

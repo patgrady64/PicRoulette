@@ -239,7 +239,18 @@ private fun favoriteMatchKey(
             missingDelimiterValue = fileName
         )
 
-    return withoutExtension
+    /*
+     * Current PicRoulette favorites are saved as
+     * <original-stem>_yyyyMMddHHmmssSSS.jpg. Strip that generated
+     * 17-digit suffix before comparing the favorite to its source.
+     */
+    val withoutGeneratedTimestamp = withoutExtension
+        .replace(
+            Regex("_\\d{17}$"),
+            ""
+        )
+
+    return withoutGeneratedTimestamp
         .replace(
             Regex(
                 pattern =
