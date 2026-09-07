@@ -104,6 +104,16 @@ fun PicRouletteHomeScreen(
         }
 
         item {
+            HomeMenuRow(
+                title = "Library Folders",
+                subtitle = if (folderCount == 1) "1 source folder" else "$folderCount source folders",
+                icon = Icons.Rounded.FolderCopy,
+                accentColor = Color(0xFFB79CFF),
+                onClick = onOpenFolders
+            )
+        }
+
+        item {
             LibrarySummaryRow(
                 photoCount = if (isScanning) scanPhotosFound else photoCount,
                 favoriteCount = favoriteCount,
@@ -148,15 +158,6 @@ fun PicRouletteHomeScreen(
             }
         }
 
-        item {
-            HomeMenuRow(
-                title = "Library Folders",
-                subtitle = if (folderCount == 1) "1 source folder" else "$folderCount source folders",
-                icon = Icons.Rounded.FolderCopy,
-                accentColor = Color(0xFFB79CFF),
-                onClick = onOpenFolders
-            )
-        }
 
         item {
             Text(

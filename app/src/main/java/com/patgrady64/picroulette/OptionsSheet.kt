@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -48,6 +49,7 @@ fun PicRouletteOptionsSheet(
     onScanLibraryOnStartChanged: (Boolean) -> Unit,
     onDefaultPhotoDisplayModeChanged: (PhotoDisplayMode) -> Unit,
     onOpenBackupRestore: () -> Unit,
+    onShowTutorial: () -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(
@@ -128,6 +130,26 @@ fun PicRouletteOptionsSheet(
                 themeColor = themeColor,
                 onCheckedChange = onScanLibraryOnStartChanged
             )
+
+            OptionSectionTitle("Help")
+
+            Surface(
+                onClick = onShowTutorial,
+                shape = RoundedCornerShape(22.dp),
+                color = Color.White.copy(alpha = 0.055f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OptionIcon(iconColor = themeColor) {
+                        Icon(Icons.Rounded.Info, null, tint = themeColor, modifier = Modifier.size(25.dp))
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Text("Show tutorial", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Text("Replay the quick PicRoulette walkthrough", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    }
+                }
+            }
 
             OptionSectionTitle("Data")
 

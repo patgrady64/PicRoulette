@@ -12,6 +12,7 @@ private const val KEEP_SCREEN_AWAKE_KEY = "keep_screen_awake_enabled"
 private const val PHOTO_COUNTER_DEFAULT_KEY = "photo_counter_default_enabled"
 private const val SCAN_LIBRARY_ON_START_KEY = "scan_library_on_start_enabled"
 private const val DEFAULT_PHOTO_DISPLAY_KEY = "default_photo_display_mode"
+private const val TUTORIAL_SEEN_KEY = "tutorial_seen_v1"
 private const val PHOTO_LIBRARY_CACHE_FILE = "photo_library_cache.txt"
 
 enum class PhotoDisplayMode {
@@ -107,6 +108,14 @@ fun setDefaultPhotoDisplayMode(
         .edit()
         .putString(DEFAULT_PHOTO_DISPLAY_KEY, mode.name)
         .apply()
+}
+
+
+fun hasSeenTutorial(context: Context): Boolean =
+    preferences(context).getBoolean(TUTORIAL_SEEN_KEY, false)
+
+fun setTutorialSeen(context: Context, seen: Boolean = true) {
+    preferences(context).edit().putBoolean(TUTORIAL_SEEN_KEY, seen).apply()
 }
 
 /**

@@ -78,9 +78,6 @@ fun AlbumsBrowserSheet(
     var editing by remember { mutableStateOf<PhotoAlbum?>(null) }
     var editName by remember { mutableStateOf("") }
     var deleting by remember { mutableStateOf<PhotoAlbum?>(null) }
-    val albumed = albums.flatMap { it.photoUris }.toSet()
-    val unfiled = allPhotos.filter { it.toString() !in albumed }
-
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.88f).padding(horizontal = 20.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -88,9 +85,6 @@ fun AlbumsBrowserSheet(
                 TextButton(onClick = { creating = true }) { Icon(Icons.Rounded.Add, null); Text(" New") }
             }
             LazyColumn(Modifier.weight(1f)) {
-                if (unfiled.isNotEmpty()) item {
-                    AlbumBrowserRow("Not in an Album", unfiled.size, unfiled.firstOrNull(), true, { onPlay(unfiled) }, null, null)
-                }
                 items(albums, key = { it.id }) { album ->
                     val photos = album.photoUris.map(Uri::parse).filter { uri -> allPhotos.any { it.toString() == uri.toString() } }
                     AlbumBrowserRow(album.name, photos.size, photos.firstOrNull(), photos.isNotEmpty(), { onPlay(photos) }, { editing = album; editName = album.name }, { deleting = album })

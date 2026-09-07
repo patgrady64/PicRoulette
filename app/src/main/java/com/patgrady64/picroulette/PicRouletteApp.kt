@@ -178,6 +178,7 @@ fun PicRouletteApp(themeColor: Color) {
     var showOptionsSheet by remember { mutableStateOf(false) }
     var showBackupRestore by remember { mutableStateOf(false) }
     var showAboutSupport by remember { mutableStateOf(false) }
+    var showTutorial by remember { mutableStateOf(!hasSeenTutorial(context)) }
     var hapticFeedbackEnabled by remember {
         mutableStateOf(isHapticFeedbackEnabled(context))
     }
@@ -476,6 +477,8 @@ fun PicRouletteApp(themeColor: Color) {
             ).distinctBy { it.toString() }
 
             pickedFolderImages.value = mergedImages
+            syncPhotoCatalog(context, mergedImages)
+            albums = loadAlbums(context)
 
             if (isPlaying && !isFavoritesMode) {
                 reconcileActiveViewerSession(mergedImages)
@@ -952,6 +955,8 @@ fun PicRouletteApp(themeColor: Color) {
         } else {
             val cachedImages = loadCachedPhotoLibrary(context)
             pickedFolderImages.value = cachedImages
+            syncPhotoCatalog(context, cachedImages)
+            albums = loadAlbums(context)
             scanPhotosFound = cachedImages.size
             scanTotalFolders = folderConfigs.size
         }
@@ -1167,8 +1172,22 @@ fun PicRouletteApp(themeColor: Color) {
                         showOptionsSheet = false
                         showBackupRestore = true
                     },
+                    onShowTutorial = {
+                        showOptionsSheet = false
+                        showTutorial = true
+                    },
                     onDismiss = {
                         showOptionsSheet = false
+                    }
+                )
+            }
+
+            if (showTutorial) {
+                PicRouletteTutorialSheet(
+                    themeColor = themeColor,
+                    onFinished = {
+                        setTutorialSeen(context)
+                        showTutorial = false
                     }
                 )
             }
