@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.PhotoAlbum
 import androidx.compose.material.icons.rounded.Pin
 import androidx.compose.material.icons.rounded.PinDrop
 import androidx.compose.material.icons.rounded.Refresh
@@ -128,6 +129,11 @@ fun PicRouletteApp(themeColor: Color) {
         )
     }
     var favoritesRefreshGeneration by remember { mutableIntStateOf(0) }
+    var albums by remember { mutableStateOf(loadAlbums(context)) }
+    var showAddToAlbums by remember { mutableStateOf(false) }
+    var showAlbumsBrowser by remember { mutableStateOf(false) }
+    var showRouletteCollectionPicker by remember { mutableStateOf(false) }
+    var isAlbumMode by remember { mutableStateOf(false) }
     var isExportingFavorites by remember {
         mutableStateOf(false)
     }
@@ -981,6 +987,7 @@ fun PicRouletteApp(themeColor: Color) {
                 photoCount = pickedFolderImages.value.size,
                 favoriteCount = favoriteFiles.size,
                 folderCount = folderConfigs.size,
+                albumCount = albums.size,
                 isScanning = isScanning.value,
                 scanPhotosFound = scanPhotosFound,
                 scanFoldersCompleted = scanFoldersCompleted,
@@ -997,6 +1004,7 @@ fun PicRouletteApp(themeColor: Color) {
                         )
 
                         isFavoritesMode = false
+                        isAlbumMode = false
                         activeSessionList.clear()
                         activeSessionList.addAll(
                             pickedFolderImages.value.shuffled()
@@ -1005,23 +1013,13 @@ fun PicRouletteApp(themeColor: Color) {
                         isPlaying = true
                     }
                 },
-                onOpenFavorites = {
-                    if (favoriteFiles.isNotEmpty()) {
-                        triggerVibration(
-                            context,
-                            VibrationStyle.LONG
-                        )
-
-                        isFavoritesMode = true
-                        activeSessionList.clear()
-                        activeSessionList.addAll(
-                            favoriteFiles
-                                .map { it.mediaUri }
-                                .shuffled()
-                        )
-                        currentIndex.intValue = 0
-                        isPlaying = true
-                    }
+                onOpenRouletteCollection = {
+                    triggerVibration(context)
+                    showRouletteCollectionPicker = true
+                },
+                onOpenAlbums = {
+                    triggerVibration(context)
+                    showAlbumsBrowser = true
                 },
                 onOpenFolders = {
                     triggerVibration(context)
@@ -1890,67 +1888,24 @@ fun PicRouletteApp(themeColor: Color) {
                                         }
                                     }
 
-                                    Surface(
+                                    IconButton(
+                                        onClick = {
+                                            triggerVibration(context, VibrationStyle.TICK)
+                                            showAddToAlbums = true
+                                        },
                                         modifier = Modifier
                                             .align(Alignment.BottomCenter)
-                                            .padding(bottom = 24.dp),
-                                        shape = RoundedCornerShape(18.dp),
-                                        color = Color.Black.copy(alpha = 0.68f),
-                                        shadowElevation = 8.dp
+                                            .padding(bottom = 24.dp)
+                                            .size(64.dp)
+                                            .background(Color.Black.copy(alpha = 0.68f), CircleShape)
                                     ) {
-                                        Row(
-                                            modifier = Modifier.padding(4.dp),
-                                            horizontalArrangement =
-                                                Arrangement.spacedBy(4.dp),
-                                            verticalAlignment =
-                                                Alignment.CenterVertically
-                                        ) {
-                                            ViewerDisplayModeChoice(
-                                                title = "Fit",
-                                                selected =
-                                                    currentPhotoDisplayMode ==
-                                                        PhotoDisplayMode.FIT,
-                                                themeColor = themeColor,
-                                                onClick = {
-                                                    if (
-                                                        currentPhotoDisplayMode !=
-                                                        PhotoDisplayMode.FIT
-                                                    ) {
-                                                        triggerVibration(
-                                                            context,
-                                                            VibrationStyle.TICK
-                                                        )
-                                                        currentPhotoDisplayMode =
-                                                            PhotoDisplayMode.FIT
-                                                        scale.floatValue = 1f
-                                                        offset.value = Offset.Zero
-                                                    }
-                                                }
-                                            )
-
-                                            ViewerDisplayModeChoice(
-                                                title = "Fill",
-                                                selected =
-                                                    currentPhotoDisplayMode ==
-                                                        PhotoDisplayMode.FILL,
-                                                themeColor = themeColor,
-                                                onClick = {
-                                                    if (
-                                                        currentPhotoDisplayMode !=
-                                                        PhotoDisplayMode.FILL
-                                                    ) {
-                                                        triggerVibration(
-                                                            context,
-                                                            VibrationStyle.TICK
-                                                        )
-                                                        currentPhotoDisplayMode =
-                                                            PhotoDisplayMode.FILL
-                                                        scale.floatValue = 1f
-                                                        offset.value = Offset.Zero
-                                                    }
-                                                }
-                                            )
-                                        }
+                                        val inAnyAlbum = albums.any { currentUri.toString() in it.photoUris }
+                                        Icon(
+                                            imageVector = Icons.Rounded.PhotoAlbum,
+                                            contentDescription = "Albums",
+                                            tint = if (inAnyAlbum) themeColor else Color.White,
+                                            modifier = Modifier.size(34.dp)
+                                        )
                                     }
 
                                     IconButton(
@@ -2754,6 +2709,79 @@ fun PicRouletteApp(themeColor: Color) {
                     Text("Close")
                 }
             }
+        )
+    }
+
+    if (showAddToAlbums && isPlaying && activeSessionList.isNotEmpty()) {
+        val viewerPhoto = activeSessionList[currentIndex.intValue]
+        val photo = if (isFavoritesMode) {
+            favoriteMappings.find { it.favoriteUri == viewerPhoto.toString() }
+                ?.originalUri
+                ?.takeIf { it.isNotBlank() }
+                ?.let(Uri::parse)
+                ?: viewerPhoto
+        } else {
+            viewerPhoto
+        }
+        AddToAlbumsSheet(
+            currentPhoto = photo,
+            albums = albums,
+            onToggle = { albumId, included -> albums = setPhotoInAlbum(context, albums, albumId, photo, included) },
+            onCreate = { name -> albums = createAlbum(context, albums, name, photo) },
+            onDismiss = { showAddToAlbums = false }
+        )
+    }
+
+    if (showRouletteCollectionPicker) {
+        RouletteCollectionSheet(
+            favoriteCount = favoriteFiles.size,
+            albums = albums,
+            allPhotos = pickedFolderImages.value,
+            onPlayFavorites = {
+                if (favoriteFiles.isNotEmpty()) {
+                    isFavoritesMode = true
+                    isAlbumMode = false
+                    activeSessionList.clear()
+                    activeSessionList.addAll(favoriteFiles.map { it.mediaUri }.shuffled())
+                    currentIndex.intValue = 0
+                    showRouletteCollectionPicker = false
+                    isPlaying = true
+                }
+            },
+            onPlayAlbum = { photos ->
+                if (photos.isNotEmpty()) {
+                    isFavoritesMode = false
+                    isAlbumMode = true
+                    activeSessionList.clear()
+                    activeSessionList.addAll(photos.shuffled())
+                    currentIndex.intValue = 0
+                    showRouletteCollectionPicker = false
+                    isPlaying = true
+                }
+            },
+            onDismiss = { showRouletteCollectionPicker = false }
+        )
+    }
+
+    if (showAlbumsBrowser) {
+        AlbumsBrowserSheet(
+            albums = albums,
+            allPhotos = pickedFolderImages.value,
+            onPlay = { photos ->
+                if (photos.isNotEmpty()) {
+                    isFavoritesMode = false
+                    isAlbumMode = true
+                    activeSessionList.clear()
+                    activeSessionList.addAll(photos.shuffled())
+                    currentIndex.intValue = 0
+                    showAlbumsBrowser = false
+                    isPlaying = true
+                }
+            },
+            onRename = { id, name -> albums = renameAlbum(context, albums, id, name) },
+            onDelete = { id -> albums = deleteAlbum(context, albums, id) },
+            onCreate = { name -> albums = createAlbum(context, albums, name) },
+            onDismiss = { showAlbumsBrowser = false }
         )
     }
 

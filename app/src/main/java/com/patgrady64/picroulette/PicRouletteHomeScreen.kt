@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FolderCopy
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.PhotoAlbum
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
@@ -55,13 +56,15 @@ fun PicRouletteHomeScreen(
     photoCount: Int,
     favoriteCount: Int,
     folderCount: Int,
+    albumCount: Int,
     isScanning: Boolean,
     scanPhotosFound: Int,
     scanFoldersCompleted: Int,
     scanTotalFolders: Int,
     scanCurrentFolder: String,
     onStartRoulette: () -> Unit,
-    onOpenFavorites: () -> Unit,
+    onOpenRouletteCollection: () -> Unit,
+    onOpenAlbums: () -> Unit,
     onOpenFolders: () -> Unit,
     onOpenOptions: () -> Unit,
     onOpenAboutSupport: () -> Unit,
@@ -125,32 +128,34 @@ fun PicRouletteHomeScreen(
             ) {
                 HomeActionTile(
                     modifier = Modifier.weight(1f),
-                    title = "Favorites",
-                    subtitle = if (favoriteCount == 1) {
-                        "1 saved photo"
-                    } else {
-                        "${formatCount(favoriteCount)} saved photos"
-                    },
-                    icon = Icons.Rounded.Favorite,
+                    title = "Pick a Roulette",
+                    subtitle = "Favorites or an album",
+                    icon = Icons.Rounded.PlayArrow,
                     accentColor = Color(0xFFFF5C8A),
-                    enabled = favoriteCount > 0,
-                    onClick = onOpenFavorites
+                    enabled = favoriteCount > 0 || albumCount > 0,
+                    onClick = onOpenRouletteCollection
                 )
 
                 HomeActionTile(
                     modifier = Modifier.weight(1f),
-                    title = "Folders",
-                    subtitle = if (folderCount == 1) {
-                        "1 library folder"
-                    } else {
-                        "$folderCount library folders"
-                    },
-                    icon = Icons.Rounded.FolderCopy,
+                    title = "Albums",
+                    subtitle = if (albumCount == 1) "1 album" else "$albumCount albums",
+                    icon = Icons.Rounded.PhotoAlbum,
                     accentColor = Color(0xFFB79CFF),
                     enabled = true,
-                    onClick = onOpenFolders
+                    onClick = onOpenAlbums
                 )
             }
+        }
+
+        item {
+            HomeMenuRow(
+                title = "Library Folders",
+                subtitle = if (folderCount == 1) "1 source folder" else "$folderCount source folders",
+                icon = Icons.Rounded.FolderCopy,
+                accentColor = Color(0xFFB79CFF),
+                onClick = onOpenFolders
+            )
         }
 
         item {
