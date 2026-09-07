@@ -1899,10 +1899,26 @@ fun PicRouletteApp(themeColor: Color) {
                                             .size(64.dp)
                                             .background(Color.Black.copy(alpha = 0.68f), CircleShape)
                                     ) {
-                                        val inAnyAlbum = albums.any { currentUri.toString() in it.photoUris }
+                                        // Favorites Roulette displays PicRoulette's copied favorite file,
+                                        // while albums intentionally store the URI of the original photo.
+                                        // Resolve that original before checking membership so the album
+                                        // indicator behaves the same in every Roulette mode.
+                                        val albumPhotoUri = if (isFavoritesMode) {
+                                            favoriteMappings
+                                                .find { it.favoriteUri == currentUri.toString() }
+                                                ?.originalUri
+                                                ?.takeIf { it.isNotBlank() }
+                                                ?.let(Uri::parse)
+                                                ?: currentUri
+                                        } else {
+                                            currentUri
+                                        }
+                                        val inAnyAlbum = albums.any {
+                                            albumPhotoUri.toString() in it.photoUris
+                                        }
                                         Icon(
                                             imageVector = Icons.Rounded.PhotoAlbum,
-                                            contentDescription = "Albums",
+                                            contentDescription = if (inAnyAlbum) "In an album" else "Albums",
                                             tint = if (inAnyAlbum) themeColor else Color.White,
                                             modifier = Modifier.size(34.dp)
                                         )
