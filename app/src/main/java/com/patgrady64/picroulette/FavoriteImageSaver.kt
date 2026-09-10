@@ -1,6 +1,5 @@
 package com.patgrady64.picroulette
 
-import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -8,7 +7,6 @@ import android.graphics.BitmapRegionDecoder
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.net.Uri
-import android.provider.MediaStore
 import android.util.Log
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.IntSize
@@ -84,17 +82,9 @@ suspend fun saveToFavoritesFolder(
 
         val finalName = "${originalStem}_$timestamp.jpg"
 
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, finalName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            put(MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/PR_FAVS")
-            put(MediaStore.MediaColumns.IS_PENDING, 1)
-        }
-
-        insertedUri = context.contentResolver.insert(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            values
-        ) ?: return@withContext null
+        val destination = createFavoriteDestination(context, finalName)
+            ?: return@withContext null
+        insertedUri = destination.uri
 
         val written = context.contentResolver
             .openOutputStream(insertedUri)
@@ -108,16 +98,7 @@ suspend fun saveToFavoritesFolder(
             return@withContext null
         }
 
-        val publishedRows = context.contentResolver.update(
-            insertedUri,
-            ContentValues().apply {
-                put(MediaStore.MediaColumns.IS_PENDING, 0)
-            },
-            null,
-            null
-        )
-
-        if (publishedRows <= 0) {
+        if (!publishFavoriteDestination(context, destination)) {
             context.contentResolver.delete(insertedUri, null, null)
             insertedUri = null
             return@withContext null

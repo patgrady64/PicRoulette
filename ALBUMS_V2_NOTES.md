@@ -20,3 +20,10 @@ Run connected Android tests from Android Studio to execute AlbumDatabaseTest.
 - Removed the automatic **Not in an Album** smart collection from the Albums browser.
 - Albums now displays only user-created albums.
 - This UI change does not delete, move, or modify any physical photos.
+
+## v6.0.7 album tiles
+- Removed photo thumbnails from album rows.
+- Albums now use a consistent rounded-square monogram tile based on the first character of the album name.
+- Uses Material theme primary-container colors; no random per-album colors.
+- Empty albums still get a normal monogram tile and keep Roulette disabled until they contain a resolvable photo.
+- This is UI-only; Albums v2 membership, Room storage, and URI reconciliation are unchanged.

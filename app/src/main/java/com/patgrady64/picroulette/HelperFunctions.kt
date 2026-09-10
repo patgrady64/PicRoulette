@@ -1,13 +1,11 @@
 package com.patgrady64.picroulette
 
-import android.content.ContentUris
 import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.DocumentsContract
-import android.provider.MediaStore
 import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -35,7 +33,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.IOException
 
 fun saveFolders(context: Context, folders: List<FolderConfig>) {
     val prefs = context.getSharedPreferences("PicRoulettePrefs", Context.MODE_PRIVATE)
@@ -117,45 +114,7 @@ private fun scanDirectory(context: Context, treeUri: Uri, parentDocId: String, r
 fun readFavoritesList(
     context: Context
 ): Result<List<FavoriteFile>> = runCatching {
-    val list = mutableListOf<FavoriteFile>()
-    val projection = arrayOf(
-        MediaStore.Images.Media._ID,
-        MediaStore.Images.Media.DISPLAY_NAME
-    )
-    val selection = "${MediaStore.Images.Media.RELATIVE_PATH} = ?"
-    val args = arrayOf("Pictures/PR_FAVS/")
-
-    val cursor = context.contentResolver.query(
-        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-        projection,
-        selection,
-        args,
-        null
-    ) ?: throw IOException("The Favorites folder could not be read.")
-
-    cursor.use {
-        val idCol = it.getColumnIndexOrThrow(
-            MediaStore.Images.Media._ID
-        )
-        val nameCol = it.getColumnIndexOrThrow(
-            MediaStore.Images.Media.DISPLAY_NAME
-        )
-
-        while (it.moveToNext()) {
-            val uri = ContentUris.withAppendedId(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                it.getLong(idCol)
-            )
-            list.add(
-                FavoriteFile(
-                    fileNameOnDisk = it.getString(nameCol),
-                    mediaUri = uri
-                )
-            )
-        }
-    }
-
-    list
+    readFavoriteFilesFromConfiguredFolder(context)
 }.onFailure { exception ->
     Log.e(
         "PR_FAV",
@@ -169,8 +128,9 @@ fun getFavoritesList(context: Context): List<FavoriteFile> =
 
 fun saveFavoriteMappings(
     context: Context,
-    mappings: List<FavoriteMapping>
-) {
+    mappings: List<FavoriteMapping>,
+    synchronous: Boolean = false
+): Boolean {
     val prefs =
         context.getSharedPreferences(
             "PicRoulettePrefs",
@@ -194,12 +154,14 @@ fun saveFavoriteMappings(
         array.put(obj)
     }
 
-    prefs.edit()
-        .putString(
-            "favorite_mappings",
-            array.toString()
-        )
-        .apply()
+    val editor = prefs.edit().putString(
+        "favorite_mappings",
+        array.toString()
+    )
+    return if (synchronous) editor.commit() else {
+        editor.apply()
+        true
+    }
 }
 
 fun getFavoriteMappings(

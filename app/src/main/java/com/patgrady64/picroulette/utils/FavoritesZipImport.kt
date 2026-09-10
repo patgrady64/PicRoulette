@@ -1,15 +1,14 @@
 package com.patgrady64.picroulette.utils
 
-import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
-import android.os.Build
-import android.provider.MediaStore
 import com.patgrady64.picroulette.FavoriteFile
 import com.patgrady64.picroulette.FavoriteLinkReview
 import com.patgrady64.picroulette.FavoriteMapping
 import com.patgrady64.picroulette.FavoriteSourceCandidate
+import com.patgrady64.picroulette.createFavoriteDestination
 import com.patgrady64.picroulette.getOriginalRelativePath
+import com.patgrady64.picroulette.publishFavoriteDestination
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
@@ -85,9 +84,6 @@ private data class RestoredArchiveFavorite(
     val manifestFile: BackupManifestFile,
     val favoriteFile: FavoriteFile
 )
-
-private const val FAVORITES_RELATIVE_PATH =
-    "Pictures/PR_FAVS"
 
 private const val MAX_MANIFEST_BYTES =
     5L * 1024L * 1024L
@@ -1038,34 +1034,12 @@ private fun insertFavoriteImage(
     mimeType: String
 ): Uri? {
 
-    val values = ContentValues().apply {
-        put(
-            MediaStore.MediaColumns.DISPLAY_NAME,
-            displayName
-        )
-
-        put(
-            MediaStore.MediaColumns.MIME_TYPE,
-            mimeType
-        )
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            put(
-                MediaStore.MediaColumns.RELATIVE_PATH,
-                FAVORITES_RELATIVE_PATH
-            )
-
-            put(
-                MediaStore.MediaColumns.IS_PENDING,
-                1
-            )
-        }
-    }
-
-    val importedUri = context.contentResolver.insert(
-        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-        values
+    val destination = createFavoriteDestination(
+        context = context,
+        fileName = displayName,
+        mimeType = mimeType
     ) ?: return null
+    val importedUri = destination.uri
 
     return try {
         context.contentResolver
@@ -1081,20 +1055,8 @@ private fun insertFavoriteImage(
                 "Could not write the imported image."
             )
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val completedValues = ContentValues().apply {
-                put(
-                    MediaStore.MediaColumns.IS_PENDING,
-                    0
-                )
-            }
-
-            context.contentResolver.update(
-                importedUri,
-                completedValues,
-                null,
-                null
-            )
+        if (!publishFavoriteDestination(context, destination)) {
+            throw IllegalStateException("Could not finish the imported image.")
         }
 
         importedUri

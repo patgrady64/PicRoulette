@@ -96,6 +96,14 @@ suspend fun scanPhotoLibrary(
 
         if (result.isSuccess) {
             imagesByFolder[config.uri.toString()] = folderImages.toList()
+
+            android.util.Log.i(
+                "PR_SCAN",
+                "Folder '$folderName': ${folderImages.size} photos; " +
+                        "unique total=${allUniqueImages.size}; " +
+                        "includeSubfolders=${config.includeSubfolders}; " +
+                        "uri=${config.uri}"
+            )
         } else {
             failures += PhotoScanFailure(
                 folderUri = config.uri,
@@ -130,10 +138,11 @@ private suspend fun scanDirectoryWithProgress(
     recursive: Boolean,
     onImageFound: suspend (Uri) -> Unit
 ) {
-    val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
-        treeUri,
-        parentDocumentId
-    )
+    val childrenUri =
+        DocumentsContract.buildChildDocumentsUriUsingTree(
+            treeUri,
+            parentDocumentId
+        )
 
     val projection = arrayOf(
         DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -146,22 +155,37 @@ private suspend fun scanDirectoryWithProgress(
         null,
         null,
         null
-    ) ?: throw IOException("The folder provider returned no results.")
+    ) ?: throw IOException(
+        "The folder provider returned no results."
+    )
+
+    var directImageCount = 0
+    var childFolderCount = 0
 
     cursor.use {
-        val documentIdColumn = it.getColumnIndexOrThrow(
-            DocumentsContract.Document.COLUMN_DOCUMENT_ID
-        )
-        val mimeTypeColumn = it.getColumnIndexOrThrow(
-            DocumentsContract.Document.COLUMN_MIME_TYPE
-        )
+        val documentIdColumn =
+            it.getColumnIndexOrThrow(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID
+            )
+
+        val mimeTypeColumn =
+            it.getColumnIndexOrThrow(
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+            )
 
         while (it.moveToNext()) {
-            val documentId = it.getString(documentIdColumn)
-            val mimeType = it.getString(mimeTypeColumn)
+            val documentId =
+                it.getString(documentIdColumn)
+
+            val mimeType =
+                it.getString(mimeTypeColumn)
 
             when {
-                mimeType == DocumentsContract.Document.MIME_TYPE_DIR && recursive -> {
+                mimeType ==
+                        DocumentsContract.Document.MIME_TYPE_DIR &&
+                        recursive -> {
+                    childFolderCount++
+
                     scanDirectoryWithProgress(
                         context = context,
                         treeUri = treeUri,
@@ -172,16 +196,30 @@ private suspend fun scanDirectoryWithProgress(
                 }
 
                 mimeType?.startsWith("image/") == true -> {
+                    directImageCount++
+
                     onImageFound(
-                        DocumentsContract.buildDocumentUriUsingTree(
-                            treeUri,
-                            documentId
-                        )
+                        DocumentsContract
+                            .buildDocumentUriUsingTree(
+                                treeUri,
+                                documentId
+                            )
                     )
                 }
             }
         }
     }
+
+    val directoryName = Uri.decode(
+        parentDocumentId.substringAfter(":")
+    )
+
+    android.util.Log.i(
+        "PR_SCAN_FOLDER",
+        "Directory '$directoryName': " +
+                "$directImageCount direct images, " +
+                "$childFolderCount child folders"
+    )
 }
 
 private fun readableFolderName(uri: Uri): String {
@@ -194,7 +232,9 @@ private fun readableFolderName(uri: Uri): String {
             ?.substringAfter(":")
             ?.trimEnd('/')
             ?.substringAfterLast('/')
-            ?.takeIf { it.isNotBlank() }
+            ?.takeIf { folderName ->
+                folderName.isNotBlank()
+            }
             ?: uri.lastPathSegment
             ?: "Library folder"
     )

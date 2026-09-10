@@ -23,6 +23,21 @@ fun replaceFavoriteMappingUri(
     return FavoriteMappingUpdateResult(updated, changed)
 }
 
+fun remapFavoriteUris(
+    mappings: List<FavoriteMapping>,
+    uriChanges: Map<String, String>
+): FavoriteMappingUpdateResult {
+    var changed = false
+    val updated = mappings.map { mapping ->
+        uriChanges[mapping.favoriteUri]?.let { newUri ->
+            changed = true
+            mapping.copy(favoriteUri = newUri)
+        } ?: mapping
+    }.toMutableList()
+
+    return FavoriteMappingUpdateResult(updated, changed)
+}
+
 fun cleanStaleFavoriteMappings(
     mappingsAtRefreshStart: List<FavoriteMapping>,
     latestMappings: List<FavoriteMapping>,

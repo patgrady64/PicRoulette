@@ -51,9 +51,6 @@ fun AboutSupportSheet(
                 ?: "Unknown"
         }
 
-    val paypalHandle =
-        PAYPAL_ME_HANDLE.trim()
-
     ModalBottomSheet(
         onDismissRequest = onDismiss
     ) {
@@ -100,6 +97,31 @@ fun AboutSupportSheet(
             item {
                 AboutCard {
                     Text(
+                        text = "About PicRoulette",
+                        style =
+                            MaterialTheme.typography
+                                .titleLarge,
+                        fontWeight =
+                            FontWeight.Bold,
+                        color = themeColor
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(10.dp)
+                    )
+
+                    Text(
+                        text = "PicRoulette is a different way to rediscover the photos already on your device. Instead of endlessly scrolling through a gallery, PicRoulette turns your photo collection into a randomized experience—bringing back forgotten pictures, favorite moments, and memories you may not have seen in years.\n\nCreate albums, build custom roulettes, save favorites, and explore your collection one photo at a time. PicRoulette is designed to keep the experience simple, private, and focused on your photos.",
+                        style =
+                            MaterialTheme.typography
+                                .bodyMedium
+                    )
+                }
+            }
+
+            item {
+                AboutCard {
+                    Text(
                         text = "About the Developer",
                         style =
                             MaterialTheme.typography
@@ -114,26 +136,7 @@ fun AboutSupportSheet(
                     )
 
                     Text(
-                        text = "Patrick R. Grady",
-                        style =
-                            MaterialTheme.typography
-                                .titleMedium,
-                        fontWeight =
-                            FontWeight.Bold
-                    )
-
-                    Text(
-                        text = "Software Engineer | AI Integration Specialist",
-                        color = Color.Gray,
-                        fontSize = 13.sp
-                    )
-
-                    Spacer(
-                        modifier = Modifier.height(12.dp)
-                    )
-
-                    Text(
-                        text = "Patrick builds full-stack systems and optimized mobile applications, with a focus on practical tools, intelligent workflows, and software that makes everyday experiences more useful and personal. He also enjoys reverse-engineering retro game architecture and creating projects inspired by the games and technology he loves. Much of his creativity is inspired by his loving twin boys, who motivate him to keep learning, building, and creating meaningful experiences.",
+                        text = "Patrick R. Grady is an independent software developer and creator with a passion for turning interesting ideas into useful and enjoyable software. His work spans mobile apps, games, productivity tools, and other digital projects, with a focus on building experiences that are practical, intuitive, and a little different from the ordinary.\n\nPicRoulette grew from a simple idea: finding a more enjoyable way to rediscover the photos we already have instead of letting them disappear into an ever-growing camera roll.",
                         style =
                             MaterialTheme.typography
                                 .bodyMedium
@@ -144,7 +147,7 @@ fun AboutSupportSheet(
             item {
                 AboutCard {
                     Text(
-                        text = "Find Me Online",
+                        text = "Links",
                         style =
                             MaterialTheme.typography
                                 .titleLarge,
@@ -164,89 +167,10 @@ fun AboutSupportSheet(
                     )
 
                     LinkButton(
-                        label = "LinkedIn",
-                        url = "https://www.linkedin.com/in/patgrady64/",
+                        label = "Support",
+                        url = "mailto:patgrady64@gmail.com?subject=PicRoulette%20Support",
                         context = context
                     )
-
-                    LinkButton(
-                        label = "GitHub",
-                        url = "https://github.com/patgrady64",
-                        context = context
-                    )
-
-                    LinkButton(
-                        label = "YouTube",
-                        url = "https://www.youtube.com/@iminvisibl2u",
-                        context = context
-                    )
-
-                    LinkButton(
-                        label = "Twitch",
-                        url = "https://www.twitch.tv/iminvizibl2u",
-                        context = context
-                    )
-                }
-            }
-
-            item {
-                AboutCard {
-                    Text(
-                        text = "Support the Developer",
-                        style =
-                            MaterialTheme.typography
-                                .titleLarge,
-                        fontWeight =
-                            FontWeight.Bold,
-                        color = themeColor
-                    )
-
-                    Spacer(
-                        modifier = Modifier.height(8.dp)
-                    )
-
-                    Text(
-                        text = "PicRoulette is free to use. Tips are completely optional. 100% of each tip goes directly to Patrick, and no features, content, badges, or recognition are provided in return.",
-                        style =
-                            MaterialTheme.typography
-                                .bodyMedium
-                    )
-
-                    Spacer(
-                        modifier = Modifier.height(14.dp)
-                    )
-
-                    TipOptionButton(
-                        label = "Buy a Coffee",
-                        price = "$0.99",
-                        amountForUrl = "0.99USD",
-                        paypalHandle = paypalHandle,
-                        context = context
-                    )
-
-                    TipOptionButton(
-                        label = "Support the App",
-                        price = "$2.99",
-                        amountForUrl = "2.99USD",
-                        paypalHandle = paypalHandle,
-                        context = context
-                    )
-
-                    TipOptionButton(
-                        label = "Extra Support",
-                        price = "$4.99",
-                        amountForUrl = "4.99USD",
-                        paypalHandle = paypalHandle,
-                        context = context
-                    )
-
-                    if (paypalHandle.isBlank()) {
-                        Text(
-                            text = "To activate the tip buttons, put your PayPal.Me name in PAYPAL_ME_HANDLE inside TipJarConfig.kt.",
-                            color = Color.Gray,
-                            fontSize = 12.sp
-                        )
-                    }
                 }
             }
 
@@ -299,36 +223,6 @@ private fun LinkButton(
         modifier = Modifier.fillMaxWidth()
     ) {
         Text(label)
-    }
-
-    Spacer(
-        modifier = Modifier.height(8.dp)
-    )
-}
-
-@Composable
-private fun TipOptionButton(
-    label: String,
-    price: String,
-    amountForUrl: String,
-    paypalHandle: String,
-    context: Context
-) {
-    Button(
-        onClick = {
-            openUrl(
-                context = context,
-                url =
-                    "https://www.paypal.me/" +
-                        paypalHandle +
-                        "/" +
-                        amountForUrl
-            )
-        },
-        enabled = paypalHandle.isNotBlank(),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text("$label — $price")
     }
 
     Spacer(

@@ -58,7 +58,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -98,7 +97,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
-import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.patgrady64.picroulette.utils.exportFavoritesZip
 import kotlinx.coroutines.Dispatchers
@@ -183,13 +181,6 @@ fun PicRouletteApp(themeColor: Color) {
     var showFoldersSheet by remember { mutableStateOf(false) }
     var showOptionsSheet by remember { mutableStateOf(false) }
     var showBackupRestore by remember { mutableStateOf(false) }
-    var isMovingFavorites by remember { mutableStateOf(false) }
-    var favoriteFolderMigrationProgress by remember {
-        mutableStateOf<FavoriteFolderMigrationProgress?>(null)
-    }
-    var favoriteFolderLocation by remember {
-        mutableStateOf(favoriteFolderDescription(context))
-    }
     var showAboutSupport by remember { mutableStateOf(false) }
     var showTutorial by remember { mutableStateOf(!hasSeenTutorial(context)) }
     var hapticFeedbackEnabled by remember {
@@ -284,21 +275,14 @@ fun PicRouletteApp(themeColor: Color) {
         }
 
     LaunchedEffect(currentViewerUri, metadataRefreshVersion) {
-        android.util.Log.i("PR_VIEWER", "metadata effect ENTER uri=$currentViewerUri refresh=$metadataRefreshVersion")
         currentPhotoMetadata = null
         currentPhotoMetadataUri = null
-        val uri = currentViewerUri ?: run {
-            android.util.Log.i("PR_VIEWER", "metadata effect EXIT: currentViewerUri is null")
-            return@LaunchedEffect
-        }
-        android.util.Log.i("PR_VIEWER", "metadata query START uri=$uri")
+        val uri = currentViewerUri ?: return@LaunchedEffect
         val metadata = withContext(Dispatchers.IO) {
             queryPhotoMetadata(context, uri)
         }
-        android.util.Log.i("PR_VIEWER", "metadata query DONE uri=$uri metadataNull=${metadata == null}")
         currentPhotoMetadata = metadata
         currentPhotoMetadataUri = uri.toString()
-        android.util.Log.i("PR_VIEWER", "metadata effect EXIT uri=$uri")
     }
 
     LaunchedEffect(showShuffleToast) {
@@ -309,7 +293,6 @@ fun PicRouletteApp(themeColor: Color) {
     }
 
     LaunchedEffect(isPlaying) {
-        android.util.Log.i("PR_VIEWER", "isPlaying effect ENTER isPlaying=$isPlaying deckSize=${activeSessionList.size} index=${currentIndex.intValue}")
         if (isPlaying) {
             // Start each new viewer session with the saved default mode.
             currentPhotoDisplayMode = defaultPhotoDisplayMode
@@ -327,9 +310,7 @@ fun PicRouletteApp(themeColor: Color) {
             // Reset zoom and image position.
             scale.floatValue = 1f
             offset.value = Offset.Zero
-            android.util.Log.i("PR_VIEWER", "isPlaying effect viewer reset COMPLETE")
         }
-        android.util.Log.i("PR_VIEWER", "isPlaying effect EXIT isPlaying=$isPlaying")
     }
 
     val transformUiVisible by rememberUpdatedState(uiVisible)
@@ -481,11 +462,8 @@ fun PicRouletteApp(themeColor: Color) {
             ).distinctBy { it.toString() }
 
             pickedFolderImages.value = mergedImages
-
-            albums = withContext(Dispatchers.IO) {
-                syncPhotoCatalog(context, mergedImages)
-                loadAlbums(context)
-            }
+            syncPhotoCatalog(context, mergedImages)
+            albums = loadAlbums(context)
 
             if (isPlaying && !isFavoritesMode) {
                 reconcileActiveViewerSession(mergedImages)
@@ -749,95 +727,6 @@ fun PicRouletteApp(themeColor: Color) {
             }
         }
 
-    fun moveFavoritesTo(selectedParentTreeUri: Uri?) {
-        if (!isPro || isMovingFavorites) return
-
-        // A Material bottom sheet is drawn above an AlertDialog. Close Options
-        // first so the migration progress cannot be hidden behind it.
-        showOptionsSheet = false
-        isMovingFavorites = true
-        val migrationStartedAt = System.currentTimeMillis()
-        favoriteFolderMigrationProgress = FavoriteFolderMigrationProgress(
-            completed = 0,
-            total = 0,
-            status = "Preparing Favorites folder…"
-        )
-        val mappingsSnapshot = favoriteMappings.toList()
-
-        scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                migrateFavoriteFolder(
-                    context = context,
-                    selectedParentTreeUri = selectedParentTreeUri,
-                    mappings = mappingsSnapshot,
-                    onProgress = { progress ->
-                        scope.launch {
-                            if (isMovingFavorites) {
-                                favoriteFolderMigrationProgress = progress
-                            }
-                        }
-                    }
-                )
-            }
-
-            // Very small folders can finish between frames. Keep the completed
-            // progress state visible briefly so the user always receives feedback.
-            val remainingDisplayTime = 750L -
-                (System.currentTimeMillis() - migrationStartedAt)
-            if (remainingDisplayTime > 0L) {
-                delay(remainingDisplayTime)
-            }
-
-            isMovingFavorites = false
-            favoriteFolderMigrationProgress = null
-            result.onSuccess { migration ->
-                favoriteMappings = migration.updatedMappings
-                favoriteFolderLocation = favoriteFolderDescription(context)
-                refreshFavs(context) { favoriteFiles = it }
-                Toast.makeText(
-                    context,
-                    if (migration.movedCount == 1) {
-                        "1 favorite moved and connections repaired"
-                    } else {
-                        "${migration.movedCount} favorites moved and connections repaired"
-                    },
-                    Toast.LENGTH_LONG
-                ).show()
-            }.onFailure { exception ->
-                Toast.makeText(
-                    context,
-                    exception.message ?: "Favorites could not be moved",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
-    }
-
-    val favoriteFolderLauncher =
-        rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.OpenDocumentTree()
-        ) { uri: Uri? ->
-            uri ?: return@rememberLauncherForActivityResult
-            val permissionFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            val permissionSaved = runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    permissionFlags
-                )
-            }.isSuccess
-
-            if (!permissionSaved) {
-                Toast.makeText(
-                    context,
-                    "PicRoulette needs permanent access to that folder.",
-                    Toast.LENGTH_LONG
-                ).show()
-            } else {
-                moveFavoritesTo(uri)
-            }
-        }
-
     val exportFavoritesZipLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.CreateDocument(
@@ -1051,12 +940,8 @@ fun PicRouletteApp(themeColor: Color) {
         } else {
             val cachedImages = loadCachedPhotoLibrary(context)
             pickedFolderImages.value = cachedImages
-
-            albums = withContext(Dispatchers.IO) {
-                syncPhotoCatalog(context, cachedImages)
-                loadAlbums(context)
-            }
-
+            syncPhotoCatalog(context, cachedImages)
+            albums = loadAlbums(context)
             scanPhotosFound = cachedImages.size
             scanTotalFolders = folderConfigs.size
         }
@@ -1083,13 +968,6 @@ fun PicRouletteApp(themeColor: Color) {
         }
     }
 
-    LaunchedEffect(isPlaying, activeSessionList.size, currentIndex.intValue) {
-        android.util.Log.i(
-            "PR_VIEWER",
-            "UI STATE isPlaying=$isPlaying deckSize=${activeSessionList.size} index=${currentIndex.intValue} currentUri=$currentViewerUri"
-        )
-    }
-
     Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
         if (!isPlaying) {
             // --- MAIN DASHBOARD UI ---
@@ -1107,68 +985,31 @@ fun PicRouletteApp(themeColor: Color) {
                 scanTotalFolders = scanTotalFolders,
                 scanCurrentFolder = scanCurrentFolder,
                 onStartRoulette = {
-                    android.util.Log.i(
-                        "PR_VIEWER",
-                        "START CLICK scanning=${isScanning.value} librarySize=${pickedFolderImages.value.size} oldDeckSize=${activeSessionList.size} isPlaying=$isPlaying"
-                    )
                     if (
                         !isScanning.value &&
                         pickedFolderImages.value.isNotEmpty()
                     ) {
-                        android.util.Log.i("PR_VIEWER", "START accepted; vibration BEGIN")
                         triggerVibration(
                             context,
                             VibrationStyle.LONG
                         )
-                        android.util.Log.i("PR_VIEWER", "vibration DONE; setting roulette mode flags")
 
                         isFavoritesMode = false
                         isAlbumMode = false
-                        android.util.Log.i("PR_VIEWER", "mode flags DONE; launching shuffle coroutine")
 
-                        val sourceImages = pickedFolderImages.value.toList()
-
+                        // Building a large shuffled deck can be expensive. Do the copy/shuffle
+                        // away from Compose's UI thread, then publish the finished deck once.
                         scope.launch {
-                            android.util.Log.i("PR_VIEWER", "shuffle coroutine ENTER")
-                            val shuffledDeck: List<Uri> =
-                                withContext<List<Uri>>(Dispatchers.Default) {
-                                    android.util.Log.i(
-                                        "PR_VIEWER",
-                                        "shuffle START on ${Thread.currentThread().name}; sourceSize=${sourceImages.size}"
-                                    )
-
-                                    val result: List<Uri> = sourceImages.shuffled()
-
-                                    android.util.Log.i(
-                                        "PR_VIEWER",
-                                        "shuffle DONE on ${Thread.currentThread().name}; resultSize=${result.size}"
-                                    )
-
-                                    result
-                                }
-                            android.util.Log.i("PR_VIEWER", "shuffle returned to UI; size=${shuffledDeck.size}")
-                            if (shuffledDeck.isNotEmpty()) {
-                                android.util.Log.i("PR_VIEWER", "deck clear BEGIN oldSize=${activeSessionList.size}")
-                                activeSessionList.clear()
-                                android.util.Log.i("PR_VIEWER", "deck clear DONE size=${activeSessionList.size}")
-                                android.util.Log.i("PR_VIEWER", "deck addAll BEGIN count=${shuffledDeck.size}")
-                                activeSessionList.addAll(shuffledDeck)
-                                android.util.Log.i("PR_VIEWER", "deck addAll DONE size=${activeSessionList.size}")
-                                currentIndex.intValue = 0
-                                android.util.Log.i("PR_VIEWER", "index set DONE; currentUri=${activeSessionList.getOrNull(currentIndex.intValue)}")
-                                android.util.Log.i("PR_VIEWER", "setting isPlaying=true BEGIN")
-                                isPlaying = true
-                                android.util.Log.i("PR_VIEWER", "setting isPlaying=true DONE value=$isPlaying")
-                            } else {
-                                android.util.Log.w("PR_VIEWER", "shuffle returned EMPTY deck")
+                            val shuffledDeck = withContext(Dispatchers.Default) {
+                                pickedFolderImages.value.toList().shuffled()
                             }
-                            android.util.Log.i("PR_VIEWER", "shuffle coroutine EXIT")
+                            if (shuffledDeck.isNotEmpty()) {
+                                activeSessionList.clear()
+                                activeSessionList.addAll(shuffledDeck)
+                                currentIndex.intValue = 0
+                                isPlaying = true
+                            }
                         }
-                    } else {
-                        android.util.Log.w(
-                            "PR_VIEWER",
-                            "START rejected scanning=${isScanning.value} librarySize=${pickedFolderImages.value.size}"
-                        )
                     }
                 },
                 onOpenRouletteCollection = {
@@ -1285,8 +1126,6 @@ fun PicRouletteApp(themeColor: Color) {
                     defaultPhotoDisplayMode =
                         defaultPhotoDisplayMode,
                     favoriteCount = favoriteFiles.size,
-                    favoriteFolderLocation = favoriteFolderLocation,
-                    isMovingFavorites = isMovingFavorites,
                     isPro = isPro,
                     themeColor = themeColor,
                     onHapticFeedbackChanged = { enabled ->
@@ -1329,31 +1168,8 @@ fun PicRouletteApp(themeColor: Color) {
                         )
                     },
                     onOpenBackupRestore = {
-                        if (isPro) {
-                            showOptionsSheet = false
-                            showBackupRestore = true
-                        } else {
-                            showOptionsSheet = false
-                            showProUpgrade = true
-                        }
-                    },
-                    onChangeFavoriteFolder = {
-                        if (isPro) {
-                            showOptionsSheet = false
-                            favoriteFolderLauncher.launch(null)
-                        } else {
-                            showOptionsSheet = false
-                            showProUpgrade = true
-                        }
-                    },
-                    onUseDefaultFavoriteFolder = {
-                        if (isPro) {
-                            showOptionsSheet = false
-                            moveFavoritesTo(null)
-                        } else {
-                            showOptionsSheet = false
-                            showProUpgrade = true
-                        }
+                        showOptionsSheet = false
+                        showBackupRestore = true
                     },
                     onShowTutorial = {
                         showOptionsSheet = false
@@ -1376,53 +1192,6 @@ fun PicRouletteApp(themeColor: Color) {
                         setTutorialSeen(context)
                         showTutorial = false
                     }
-                )
-            }
-
-            if (isMovingFavorites) {
-                val migrationProgress = favoriteFolderMigrationProgress
-                AlertDialog(
-                    onDismissRequest = {},
-                    properties = DialogProperties(
-                        dismissOnBackPress = false,
-                        dismissOnClickOutside = false
-                    ),
-                    title = { Text("Moving PR_FAVS") },
-                    text = {
-                        Column {
-                            Text(
-                                migrationProgress?.status
-                                    ?: "Preparing Favorites folder…"
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            if (migrationProgress != null && migrationProgress.total > 0) {
-                                val fraction = (
-                                    migrationProgress.completed.toFloat() /
-                                        migrationProgress.total.toFloat()
-                                    ).coerceIn(0f, 1f)
-                                LinearProgressIndicator(
-                                    progress = { fraction },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    "${migrationProgress.completed} of " +
-                                        "${migrationProgress.total} favorites"
-                                )
-                            } else {
-                                LinearProgressIndicator(
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                "Keep PicRoulette open until the move is complete.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
-                            )
-                        }
-                    },
-                    confirmButton = {}
                 )
             }
 
@@ -1492,12 +1261,6 @@ fun PicRouletteApp(themeColor: Color) {
 
         } else {
             // --- PLAYBACK UI ---
-            LaunchedEffect(currentViewerUri, activeSessionList.size, currentIndex.intValue) {
-                android.util.Log.i(
-                    "PR_VIEWER",
-                    "PLAYBACK BRANCH entered deckSize=${activeSessionList.size} index=${currentIndex.intValue} uri=$currentViewerUri"
-                )
-            }
             Box(
                 modifier = Modifier.fillMaxSize().background(Color.Black)
                     .onGloballyPositioned { containerSize = it.size }
@@ -1522,9 +1285,6 @@ fun PicRouletteApp(themeColor: Color) {
                         })
             ) {
                 val currentUri = currentViewerUri
-                LaunchedEffect(currentUri) {
-                    android.util.Log.i("PR_VIEWER", "VIEWER currentUri changed to $currentUri")
-                }
                 if (currentUri != null) {
 
                     val currentFileDetails =
@@ -1647,13 +1407,12 @@ fun PicRouletteApp(themeColor: Color) {
                         }
                     }
 
-                    /*
-                     * Keep only one decoded copy of the current photo in memory.
-                     * The old blurred full-screen background loaded currentUri a second time,
-                     * which could require two full-resolution bitmaps plus a blur render target.
-                     * On large camera photos that can push the process over its graphics/memory
-                     * budget and Android kills it without a Java FATAL EXCEPTION.
-                     */
+                    AsyncImage(
+                        model = currentUri,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().blur(40.dp).graphicsLayer(alpha = 0.4f)
+                    )
                     val viewportGeometry =
                         activePhotoMetadata?.let { metadata ->
                             val width = metadata.width
@@ -2035,18 +1794,9 @@ fun PicRouletteApp(themeColor: Color) {
                                                             val mapping =
                                                                 favoriteMappings.find {
                                                                     !it.isDeleted &&
-                                                                        (
-                                                                            sameImage(
-                                                                                Uri.parse(it.originalUri),
-                                                                                currentUri
-                                                                            ) ||
-                                                                                it.favoriteUri == currentUri.toString() ||
-                                                                                runCatching {
-                                                                                    sameImage(
-                                                                                        Uri.parse(it.favoriteUri),
-                                                                                        currentUri
-                                                                                    )
-                                                                                }.getOrDefault(false)
+                                                                        sameImage(
+                                                                            Uri.parse(it.originalUri),
+                                                                            currentUri
                                                                         )
                                                                 }
 
@@ -2081,23 +1831,6 @@ fun PicRouletteApp(themeColor: Color) {
                                                                     context,
                                                                     favoriteMappings
                                                                 )
-
-                                                                if (isAlbumMode) {
-                                                                    val originalUri = Uri.parse(
-                                                                        mapToDelete.originalUri
-                                                                    )
-                                                                    activeSessionList.indices.forEach { index ->
-                                                                        val sessionUri = activeSessionList[index]
-                                                                        if (
-                                                                            sessionUri == currentUri ||
-                                                                            runCatching {
-                                                                                sameImage(sessionUri, currentUri)
-                                                                            }.getOrDefault(false)
-                                                                        ) {
-                                                                            activeSessionList[index] = originalUri
-                                                                        }
-                                                                    }
-                                                                }
 
                                                                 refreshFavs(context) {
                                                                     favoriteFiles = it
@@ -3422,3 +3155,4 @@ private fun ImportProgressCount(
         )
     }
 }
+

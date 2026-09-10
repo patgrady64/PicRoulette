@@ -41,6 +41,39 @@ class FavoriteMappingOperationsTest {
         assertFalse(result.changed)
         assertEquals(listOf(mapping), result.mappings)
     }
+
+    @Test
+    fun folderMigration_repairsEveryMovedFavoriteConnection() {
+        val other = mapping.copy(
+            originalUri = "content://original/2",
+            favoriteUri = "content://favorite/old-2"
+        )
+
+        val result = remapFavoriteUris(
+            mappings = listOf(mapping, other),
+            uriChanges = mapOf(
+                "content://favorite/old" to "content://new-folder/1",
+                "content://favorite/old-2" to "content://new-folder/2"
+            )
+        )
+
+        assertTrue(result.changed)
+        assertEquals("content://new-folder/1", result.mappings[0].favoriteUri)
+        assertEquals("content://new-folder/2", result.mappings[1].favoriteUri)
+        assertEquals(mapping.originalUri, result.mappings[0].originalUri)
+        assertEquals(other.originalUri, result.mappings[1].originalUri)
+    }
+
+    @Test
+    fun folderMigration_keepsUnmatchedMappingsUnchanged() {
+        val result = remapFavoriteUris(
+            mappings = listOf(mapping),
+            uriChanges = mapOf("content://different" to "content://new")
+        )
+
+        assertFalse(result.changed)
+        assertEquals(listOf(mapping), result.mappings)
+    }
     @Test
     fun staleCleanup_doesNotDeleteMappingAddedAfterRefreshStarted() {
         val oldMissing = mapping

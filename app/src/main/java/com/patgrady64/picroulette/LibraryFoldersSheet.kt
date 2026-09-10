@@ -51,7 +51,9 @@ fun LibraryFoldersSheet(
     onAddFolder: () -> Unit,
     onToggleSubfolders: (FolderConfig, Boolean) -> Unit,
     onRemoveFolder: (FolderConfig) -> Unit,
-    onRescan: () -> Unit
+    onRescan: () -> Unit,
+    onFixFavoritesMapping: () -> Unit,
+    isFixingFavoritesMapping: Boolean
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss
@@ -158,6 +160,34 @@ fun LibraryFoldersSheet(
                 )
                 Spacer(modifier = Modifier.width(9.dp))
                 Text("Add library folder")
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedButton(
+                onClick = onFixFavoritesMapping,
+                enabled = !isScanning && !isFixingFavoritesMapping && folders.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (isFixingFavoritesMapping) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Rounded.Refresh,
+                        contentDescription = null
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(9.dp))
+                Text(
+                    if (isFixingFavoritesMapping)
+                        "Fixing favorites mapping…"
+                    else
+                        "Fix favorites mapping"
+                )
             }
 
             Spacer(modifier = Modifier.height(10.dp))

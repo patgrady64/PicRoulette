@@ -16,9 +16,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +28,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +45,9 @@ fun PicRouletteOptionsSheet(
     scanLibraryOnStart: Boolean,
     defaultPhotoDisplayMode: PhotoDisplayMode,
     favoriteCount: Int,
+    favoriteFolderLocation: String,
+    isMovingFavorites: Boolean,
+    isPro: Boolean,
     themeColor: Color,
     onHapticFeedbackChanged: (Boolean) -> Unit,
     onKeepScreenAwakeChanged: (Boolean) -> Unit,
@@ -49,7 +55,10 @@ fun PicRouletteOptionsSheet(
     onScanLibraryOnStartChanged: (Boolean) -> Unit,
     onDefaultPhotoDisplayModeChanged: (PhotoDisplayMode) -> Unit,
     onOpenBackupRestore: () -> Unit,
+    onChangeFavoriteFolder: () -> Unit,
+    onUseDefaultFavoriteFolder: () -> Unit,
     onShowTutorial: () -> Unit,
+    onUpgradeToPro: () -> Unit,
     onDismiss: () -> Unit
 ) {
     ModalBottomSheet(
@@ -154,7 +163,76 @@ fun PicRouletteOptionsSheet(
             OptionSectionTitle("Data")
 
             Surface(
-                onClick = onOpenBackupRestore,
+                onClick = {
+                    if (isPro && !isMovingFavorites) {
+                        onChangeFavoriteFolder()
+                    } else if (!isPro) {
+                        onUpgradeToPro()
+                    }
+                },
+                shape = RoundedCornerShape(22.dp),
+                color = Color.White.copy(alpha = 0.055f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(17.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OptionIcon(iconColor = themeColor) {
+                        Icon(
+                            imageVector = Icons.Rounded.FolderOpen,
+                            contentDescription = null,
+                            tint = themeColor,
+                            modifier = Modifier.size(25.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (isMovingFavorites) {
+                                    "Moving favorites…"
+                                } else {
+                                    "Favorites folder"
+                                },
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            ProBadge()
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = favoriteFolderLocation,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    }
+                }
+            }
+
+            if (!favoriteFolderLocation.endsWith("(default)")) {
+                Spacer(modifier = Modifier.height(6.dp))
+                TextButton(
+                    onClick = {
+                        if (isPro && !isMovingFavorites) {
+                            onUseDefaultFavoriteFolder()
+                        } else if (!isPro) {
+                            onUpgradeToPro()
+                        }
+                    },
+                    enabled = !isMovingFavorites
+                ) {
+                    Text("Move back to Pictures/PR_FAVS")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Surface(
+                onClick = {
+                    if (isPro) onOpenBackupRestore() else onUpgradeToPro()
+                },
                 shape = RoundedCornerShape(22.dp),
                 color = Color.White.copy(alpha = 0.055f),
                 modifier = Modifier.fillMaxWidth()
@@ -177,11 +255,15 @@ fun PicRouletteOptionsSheet(
                     Spacer(modifier = Modifier.width(14.dp))
 
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Backup & restore",
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Backup & restore",
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            ProBadge()
+                        }
 
                         Spacer(modifier = Modifier.height(2.dp))
 
@@ -190,6 +272,51 @@ fun PicRouletteOptionsSheet(
                                 "Protect 1 favorite and its original-photo link"
                             } else {
                                 "Protect $favoriteCount favorites and their original-photo links"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.Gray
+                        )
+                    }
+                }
+            }
+
+            OptionSectionTitle("PicRoulette Pro")
+
+            Surface(
+                onClick = { if (!isPro) onUpgradeToPro() },
+                shape = RoundedCornerShape(22.dp),
+                color = Color.White.copy(alpha = 0.055f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(17.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OptionIcon(iconColor = themeColor) {
+                        Icon(
+                            imageVector = Icons.Rounded.Star,
+                            contentDescription = null,
+                            tint = themeColor,
+                            modifier = Modifier.size(25.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(14.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = if (isPro) "Pro user" else "Upgrade to Pro",
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+
+                        Spacer(modifier = Modifier.height(2.dp))
+
+                        Text(
+                            text = if (isPro) {
+                                "PicRoulette Pro is active on this device"
+                            } else {
+                                "Unlock Albums, Album Roulette, and future Pro features"
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = Color.Gray
@@ -226,6 +353,22 @@ fun PicRouletteOptionsSheet(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ProBadge() {
+    Surface(
+        shape = RoundedCornerShape(7.dp),
+        color = Color(0xFFB79CFF).copy(alpha = 0.22f)
+    ) {
+        Text(
+            text = "PRO",
+            color = Color(0xFFD6C7FF),
+            fontWeight = FontWeight.Black,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
     }
 }
 

@@ -32,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,6 +58,7 @@ fun PicRouletteHomeScreen(
     favoriteCount: Int,
     folderCount: Int,
     albumCount: Int,
+    isPro: Boolean,
     isScanning: Boolean,
     scanPhotosFound: Int,
     scanFoldersCompleted: Int,
@@ -148,8 +150,12 @@ fun PicRouletteHomeScreen(
 
                 HomeActionTile(
                     modifier = Modifier.weight(1f),
-                    title = "Albums",
-                    subtitle = if (albumCount == 1) "1 album" else "$albumCount albums",
+                    title = if (isPro) "Albums · Pro" else "Albums · Pro",
+                    subtitle = if (isPro) {
+                        if (albumCount == 1) "1 album" else "$albumCount albums"
+                    } else {
+                        "Unlock custom collections"
+                    },
                     icon = Icons.Rounded.PhotoAlbum,
                     accentColor = Color(0xFFB79CFF),
                     enabled = true,
@@ -180,8 +186,8 @@ fun PicRouletteHomeScreen(
 
         item {
             HomeMenuRow(
-                title = "About & Support",
-                subtitle = "Developer bio, links, app info, and support",
+                title = "About",
+                subtitle = "App information, website, and support",
                 icon = Icons.Rounded.Info,
                 accentColor = Color(0xFF55D6C2),
                 onClick = onOpenAboutSupport
@@ -282,8 +288,22 @@ private fun StartRouletteCard(
 ) {
     val enabled = photoCount > 0 && !isScanning
 
+    LaunchedEffect(photoCount, isScanning, enabled) {
+        android.util.Log.i(
+            "PR_HOME",
+            "StartRouletteCard STATE photoCount=$photoCount isScanning=$isScanning enabled=$enabled"
+        )
+    }
+
     Surface(
-        onClick = onClick,
+        onClick = {
+            android.util.Log.i(
+                "PR_HOME",
+                "StartRouletteCard CLICK received photoCount=$photoCount isScanning=$isScanning enabled=$enabled"
+            )
+            onClick()
+            android.util.Log.i("PR_HOME", "StartRouletteCard CLICK callback returned")
+        },
         enabled = enabled,
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(32.dp),
