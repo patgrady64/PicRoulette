@@ -1,6 +1,0 @@
-Version: 3.0.157
-Mode: zelda|metroid
-Flagset String: KQqVMuaUrLW9kj5FLrrrrj7TIQ9A8KslTqm9U-rtJqtmLWXsrVWwJUK
-Seed: MNW8PR
-Hash: 28F2E9
-
