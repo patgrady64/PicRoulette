@@ -283,7 +283,7 @@ fun PicRouletteOptionsSheet(
             OptionSectionTitle("PicRoulette Pro")
 
             Surface(
-                onClick = { if (!isPro) onUpgradeToPro() },
+                onClick = onUpgradeToPro,
                 shape = RoundedCornerShape(22.dp),
                 color = Color.White.copy(alpha = 0.055f),
                 modifier = Modifier.fillMaxWidth()

@@ -121,17 +121,32 @@ fun PicRouletteApp(themeColor: Color) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    val isPro = ProAccess.isPro()
+    val isPro = ProAccess.isPro(context)
 
     // --- State ---
     var folderConfigs by remember { mutableStateOf(getSavedFolders(context)) }
     val pickedFolderImages = remember { mutableStateOf<List<Uri>>(emptyList()) }
     val activeSessionList = remember { mutableStateListOf<Uri>() }
-    var favoriteFiles by remember { mutableStateOf<List<FavoriteFile>>(emptyList()) }
-    var favoriteMappings by remember {
+    // Seed Favorites from the locally stored mappings so the count and Roulette
+    // button are available immediately. The physical PR_FAVS scan below still
+    // runs in the background and replaces this cache with the verified list.
+    val initialFavoriteMappings = remember { getFavoriteMappings(context) }
+    var favoriteFiles by remember {
         mutableStateOf(
-            getFavoriteMappings(context)
+            initialFavoriteMappings
+                .asSequence()
+                .filter { !it.isDeleted && it.favoriteUri.isNotBlank() }
+                .map { mapping ->
+                    FavoriteFile(
+                        fileNameOnDisk = mapping.originalFileName.ifBlank { "favorite" },
+                        mediaUri = Uri.parse(mapping.favoriteUri)
+                    )
+                }
+                .toList()
         )
+    }
+    var favoriteMappings by remember {
+        mutableStateOf(initialFavoriteMappings.toMutableList())
     }
     var favoritesRefreshGeneration by remember { mutableIntStateOf(0) }
     var albums by remember { mutableStateOf(loadAlbums(context)) }
@@ -3121,7 +3136,14 @@ fun PicRouletteApp(themeColor: Color) {
     }
 
     if (showProUpgrade) {
-        ProUpgradeSheet(onDismiss = { showProUpgrade = false })
+        ProUpgradeSheet(
+            installationId = ProAccess.installationId(context),
+            isPro = isPro,
+            onActivate = { code ->
+                ProAccess.activateComplimentaryPro(context, code)
+            },
+            onDismiss = { showProUpgrade = false }
+        )
     }
 
     if (showAlbumsBrowser) {

@@ -10,6 +10,8 @@
 .DS_Store
 /build
 /captures
+# PicRoulette Pro activation private key
+/tools/picroulette_private_key.pem
 .externalNativeBuild
 .cxx
 local.properties

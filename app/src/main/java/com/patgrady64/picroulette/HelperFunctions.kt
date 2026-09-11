@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.documentfile.provider.DocumentFile
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -252,16 +253,27 @@ fun deleteFavorite(
         return false
     }
 
-    return try {
-        val rows = context.contentResolver.delete(
-            uri,
-            null,
-            null
-        )
+    // Favorites can live either in MediaStore or in a user-selected SAF folder.
+    // ContentResolver.delete() is reliable for MediaStore URIs, but some document
+    // providers reject it for SAF document URIs. Try the provider-native
+    // DocumentFile delete first for document URIs, then fall back to the resolver.
+    if (DocumentsContract.isDocumentUri(context, uri)) {
+        val deletedAsDocument = runCatching {
+            DocumentFile.fromSingleUri(context, uri)?.delete() == true
+        }.onFailure { exception ->
+            Log.w("PR_FAV", "DocumentFile delete failed; trying resolver: $uri", exception)
+        }.getOrDefault(false)
 
+        if (deletedAsDocument) {
+            Log.d("PR_FAV", "Deleted SAF favorite: $uri")
+            return true
+        }
+    }
+
+    return try {
+        val rows = context.contentResolver.delete(uri, null, null)
         Log.d("PR_FAV", "Deleted rows: $rows")
         Log.d("PR_FAV", "Tried to delete: $uri")
-
         rows > 0
     } catch (exception: Exception) {
         Log.e("PR_FAV", "Favorite delete failed: $uri", exception)
