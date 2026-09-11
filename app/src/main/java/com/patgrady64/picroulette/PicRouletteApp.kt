@@ -127,6 +127,7 @@ fun PicRouletteApp(themeColor: Color) {
     var folderConfigs by remember { mutableStateOf(getSavedFolders(context)) }
     val pickedFolderImages = remember { mutableStateOf<List<Uri>>(emptyList()) }
     val activeSessionList = remember { mutableStateListOf<Uri>() }
+    val activeSessionSource = remember { mutableStateListOf<Uri>() }
     // Seed Favorites from the locally stored mappings so the count and Roulette
     // button are available immediately. The physical PR_FAVS scan below still
     // runs in the background and replaces this cache with the verified list.
@@ -153,6 +154,10 @@ fun PicRouletteApp(themeColor: Color) {
     var showAddToAlbums by remember { mutableStateOf(false) }
     var showAlbumsBrowser by remember { mutableStateOf(false) }
     var showRouletteCollectionPicker by remember { mutableStateOf(false) }
+    var showSmartRoulette by remember { mutableStateOf(false) }
+    var showRouletteHistory by remember { mutableStateOf(false) }
+    var smartFilters by remember { mutableStateOf(ProRouletteFilters()) }
+    var historyGeneration by remember { mutableIntStateOf(0) }
     var showProUpgrade by remember { mutableStateOf(false) }
     var isAlbumMode by remember { mutableStateOf(false) }
     var isExportingFavorites by remember {
@@ -1145,26 +1150,29 @@ fun PicRouletteApp(themeColor: Color) {
 
                         scope.launch {
                             android.util.Log.i("PR_VIEWER", "shuffle coroutine ENTER")
-                            val shuffledDeck: List<Uri> =
-                                withContext<List<Uri>>(Dispatchers.Default) {
+                            val (filteredSource, shuffledDeck) =
+                                withContext(Dispatchers.IO) {
                                     android.util.Log.i(
                                         "PR_VIEWER",
                                         "shuffle START on ${Thread.currentThread().name}; sourceSize=${sourceImages.size}"
                                     )
 
-                                    val result: List<Uri> = sourceImages.shuffled()
+                                    val filtered = if (isPro) applyProRouletteFilters(context, sourceImages, favoriteMappings.map { it.originalUri }.filter { it.isNotBlank() }.toSet(), smartFilters) else sourceImages
+                                    val result: List<Uri> = if (isPro) prepareNoRepeatDeck(context, filtered) else filtered.shuffled()
 
                                     android.util.Log.i(
                                         "PR_VIEWER",
                                         "shuffle DONE on ${Thread.currentThread().name}; resultSize=${result.size}"
                                     )
 
-                                    result
+                                    filtered to result
                                 }
                             android.util.Log.i("PR_VIEWER", "shuffle returned to UI; size=${shuffledDeck.size}")
                             if (shuffledDeck.isNotEmpty()) {
                                 android.util.Log.i("PR_VIEWER", "deck clear BEGIN oldSize=${activeSessionList.size}")
                                 activeSessionList.clear()
+                                activeSessionSource.clear()
+                                activeSessionSource.addAll(filteredSource)
                                 android.util.Log.i("PR_VIEWER", "deck clear DONE size=${activeSessionList.size}")
                                 android.util.Log.i("PR_VIEWER", "deck addAll BEGIN count=${shuffledDeck.size}")
                                 activeSessionList.addAll(shuffledDeck)
@@ -1189,6 +1197,14 @@ fun PicRouletteApp(themeColor: Color) {
                 onOpenRouletteCollection = {
                     triggerVibration(context)
                     showRouletteCollectionPicker = true
+                },
+                onOpenSmartRoulette = {
+                    triggerVibration(context)
+                    if (isPro) showSmartRoulette = true else showProUpgrade = true
+                },
+                onOpenRouletteHistory = {
+                    triggerVibration(context)
+                    if (isPro) showRouletteHistory = true else showProUpgrade = true
                 },
                 onOpenAlbums = {
                     triggerVibration(context)
@@ -1524,7 +1540,12 @@ fun PicRouletteApp(themeColor: Color) {
                                     context,
                                     VibrationStyle.TICK
                                 ); if (currentIndex.intValue >= activeSessionList.size - 1) {
-                                    reshuffleDeckAvoidingBoundaryRepeat(activeSessionList)
+                                    if (isPro && isNoRepeatsEnabled(context) && activeSessionSource.isNotEmpty()) {
+                                        activeSessionList.clear()
+                                        activeSessionList.addAll(prepareNoRepeatDeck(context, activeSessionSource))
+                                    } else {
+                                        reshuffleDeckAvoidingBoundaryRepeat(activeSessionList)
+                                    }
                                     currentIndex.intValue = 0
                                     showShuffleToast = true
                                 } else {
@@ -1539,6 +1560,10 @@ fun PicRouletteApp(themeColor: Color) {
                 val currentUri = currentViewerUri
                 LaunchedEffect(currentUri) {
                     android.util.Log.i("PR_VIEWER", "VIEWER currentUri changed to $currentUri")
+                    if (isPro && currentUri != null) {
+                        recordRouletteView(context, currentUri)
+                        historyGeneration++
+                    }
                 }
                 if (currentUri != null) {
 
@@ -3108,7 +3133,9 @@ fun PicRouletteApp(themeColor: Color) {
                     isFavoritesMode = true
                     isAlbumMode = false
                     activeSessionList.clear()
-                    activeSessionList.addAll(favoriteFiles.map { it.mediaUri }.shuffled())
+                    activeSessionSource.clear()
+                    activeSessionSource.addAll(favoriteFiles.map { it.mediaUri })
+                    activeSessionList.addAll(if (isPro) prepareNoRepeatDeck(context, activeSessionSource) else activeSessionSource.shuffled())
                     currentIndex.intValue = 0
                     showRouletteCollectionPicker = false
                     isPlaying = true
@@ -3119,7 +3146,9 @@ fun PicRouletteApp(themeColor: Color) {
                     isFavoritesMode = false
                     isAlbumMode = true
                     activeSessionList.clear()
-                    activeSessionList.addAll(photos.shuffled())
+                    activeSessionSource.clear()
+                    activeSessionSource.addAll(photos)
+                    activeSessionList.addAll(if (isPro) prepareNoRepeatDeck(context, activeSessionSource) else activeSessionSource.shuffled())
                     currentIndex.intValue = 0
                     showRouletteCollectionPicker = false
                     isPlaying = true
@@ -3132,6 +3161,43 @@ fun PicRouletteApp(themeColor: Color) {
                 showProUpgrade = true
             },
             onDismiss = { showRouletteCollectionPicker = false }
+        )
+    }
+
+    if (showSmartRoulette) {
+        SmartRouletteSheet(
+            initial = smartFilters,
+            noRepeats = isNoRepeatsEnabled(context),
+            onApply = { filters, noRepeats ->
+                smartFilters = filters
+                setNoRepeatsEnabled(context, noRepeats)
+                showSmartRoulette = false
+                Toast.makeText(context, "Smart Roulette settings applied", Toast.LENGTH_SHORT).show()
+            },
+            onDismiss = { showSmartRoulette = false }
+        )
+    }
+
+    if (showRouletteHistory) {
+        val history = remember(historyGeneration, showRouletteHistory) { loadRouletteHistory(context) }
+        RouletteHistorySheet(
+            history = history,
+            onOpen = { uri ->
+                activeSessionList.clear()
+                activeSessionSource.clear()
+                activeSessionSource.add(uri)
+                activeSessionList.add(uri)
+                currentIndex.intValue = 0
+                isFavoritesMode = false
+                isAlbumMode = false
+                showRouletteHistory = false
+                isPlaying = true
+            },
+            onClear = {
+                clearRouletteHistory(context)
+                historyGeneration++
+            },
+            onDismiss = { showRouletteHistory = false }
         )
     }
 
@@ -3156,7 +3222,9 @@ fun PicRouletteApp(themeColor: Color) {
                     isFavoritesMode = false
                     isAlbumMode = true
                     activeSessionList.clear()
-                    activeSessionList.addAll(photos.shuffled())
+                    activeSessionSource.clear()
+                    activeSessionSource.addAll(photos)
+                    activeSessionList.addAll(if (isPro) prepareNoRepeatDeck(context, activeSessionSource) else activeSessionSource.shuffled())
                     currentIndex.intValue = 0
                     showAlbumsBrowser = false
                     isPlaying = true

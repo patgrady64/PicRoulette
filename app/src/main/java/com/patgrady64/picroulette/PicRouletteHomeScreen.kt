@@ -66,6 +66,8 @@ fun PicRouletteHomeScreen(
     scanCurrentFolder: String,
     onStartRoulette: () -> Unit,
     onOpenRouletteCollection: () -> Unit,
+    onOpenSmartRoulette: () -> Unit,
+    onOpenRouletteHistory: () -> Unit,
     onOpenAlbums: () -> Unit,
     onOpenFolders: () -> Unit,
     onOpenOptions: () -> Unit,
@@ -164,6 +166,41 @@ fun PicRouletteHomeScreen(
             }
         }
 
+
+        item {
+            Text(
+                text = "Pro Roulette",
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                HomeActionTile(
+                    modifier = Modifier.weight(1f),
+                    title = "Smart Filters",
+                    subtitle = if (isPro) "Date, favorites, no repeats" else "Pro feature",
+                    icon = Icons.Rounded.Settings,
+                    accentColor = Color(0xFFB79CFF),
+                    enabled = true,
+                    onClick = onOpenSmartRoulette
+                )
+                HomeActionTile(
+                    modifier = Modifier.weight(1f),
+                    title = "History",
+                    subtitle = if (isPro) "Recently shown photos" else "Pro feature",
+                    icon = Icons.Rounded.Refresh,
+                    accentColor = Color(0xFF55D6C2),
+                    enabled = true,
+                    onClick = onOpenRouletteHistory
+                )
+            }
+        }
 
         item {
             Text(
