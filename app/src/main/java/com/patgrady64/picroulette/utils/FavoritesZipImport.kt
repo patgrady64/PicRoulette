@@ -2,10 +2,17 @@ package com.patgrady64.picroulette.utils
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
+import com.patgrady64.picroulette.AlbumEntity
+import com.patgrady64.picroulette.AlbumPhotoCrossRef
+import com.patgrady64.picroulette.CatalogPhotoEntity
 import com.patgrady64.picroulette.FavoriteFile
 import com.patgrady64.picroulette.FavoriteLinkReview
 import com.patgrady64.picroulette.FavoriteMapping
 import com.patgrady64.picroulette.FavoriteSourceCandidate
+import com.patgrady64.picroulette.PicRouletteDatabase
+import com.patgrady64.picroulette.albumStableKey
 import com.patgrady64.picroulette.createFavoriteDestination
 import com.patgrady64.picroulette.getOriginalRelativePath
 import com.patgrady64.picroulette.publishFavoriteDestination
@@ -34,7 +41,10 @@ data class FavoritesZipImportResult(
     val existingLinkCount: Int,
     val unresolvedLinkCount: Int,
     val missingSourceMetadataCount: Int,
-    val reviews: List<FavoriteLinkReview>
+    val reviews: List<FavoriteLinkReview>,
+    val restoredAlbumCount: Int = 0,
+    val restoredAlbumMembershipCount: Int = 0,
+    val unresolvedAlbumPhotoCount: Int = 0
 )
 
 enum class FavoritesZipImportPhase {
@@ -72,8 +82,12 @@ private data class BackupManifestFile(
 private data class BackupManifest(
     val backupVersion: Int,
     val containsSourceLinks: Boolean,
-    val filesByArchiveName: Map<String, BackupManifestFile>
+    val filesByArchiveName: Map<String, BackupManifestFile>,
+    val albums: List<BackupAlbum>
 )
+
+private data class BackupAlbum(val id: String, val name: String, val createdAt: Long, val photos: List<BackupAlbumPhoto>)
+private data class BackupAlbumPhoto(val uri: String, val relativePath: String, val displayName: String, val sizeBytes: Long, val favoriteArchiveFile: String)
 
 private data class CopiedZipEntry(
     val byteCount: Long,
@@ -416,6 +430,10 @@ fun importFavoritesZip(
         }
     )
 
+    val albumResult = restoreAlbums(
+        context, manifest.albums, sourceImages, restoredArchiveFavorites
+    )
+
     reportProgress(
         phase = FavoritesZipImportPhase.FINISHING,
         completed = 1,
@@ -436,7 +454,10 @@ fun importFavoritesZip(
         unresolvedLinkCount = linkResult.unresolvedLinkCount,
         missingSourceMetadataCount =
             linkResult.missingSourceMetadataCount,
-        reviews = linkResult.reviews
+        reviews = linkResult.reviews,
+        restoredAlbumCount = albumResult.first,
+        restoredAlbumMembershipCount = albumResult.second,
+        unresolvedAlbumPhotoCount = albumResult.third
     )
 }
 
@@ -980,8 +1001,61 @@ private fun readBackupManifest(
             "containsSourceLinks",
             false
         ),
-        filesByArchiveName = filesByArchiveName
+        filesByArchiveName = filesByArchiveName,
+        albums = parseBackupAlbums(json)
     )
+}
+
+private fun parseBackupAlbums(json: JSONObject): List<BackupAlbum> {
+    val array = json.optJSONArray("albums") ?: return emptyList()
+    return (0 until array.length()).mapNotNull { index ->
+        val item = array.optJSONObject(index) ?: return@mapNotNull null
+        val id = item.optString("id").trim()
+        val name = item.optString("name").trim()
+        if (id.isBlank() || name.isBlank()) return@mapNotNull null
+        val photosArray = item.optJSONArray("photos")
+        val photos = if (photosArray == null) emptyList() else (0 until photosArray.length()).mapNotNull photos@ { photoIndex ->
+            val photo = photosArray.optJSONObject(photoIndex) ?: return@photos null
+            BackupAlbumPhoto(photo.optString("uri"), photo.optString("relativePath"), photo.optString("displayName"), photo.optLong("sizeBytes", -1L), photo.optString("favoriteArchiveFile"))
+        }
+        BackupAlbum(id, name, item.optLong("createdAt", System.currentTimeMillis()), photos)
+    }
+}
+
+private fun restoreAlbums(context: Context, albums: List<BackupAlbum>, sourceImages: List<Uri>, restoredFavorites: List<RestoredArchiveFavorite>): Triple<Int, Int, Int> {
+    if (albums.isEmpty()) return Triple(0, 0, 0)
+    val dao = PicRouletteDatabase.get(context).albumDao()
+    val favoritesByArchive = restoredFavorites.associateBy { it.manifestFile.archiveFile }
+    val candidates = sourceImages.distinctBy(Uri::toString)
+    val metadataCache = mutableMapOf<String, Pair<String, Long>>()
+    fun metadata(uri: Uri): Pair<String, Long> = metadataCache.getOrPut(uri.toString()) {
+        var name = uri.lastPathSegment.orEmpty(); var size = -1L
+        runCatching { context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst()) { if (!c.isNull(0)) name = c.getString(0); if (!c.isNull(1)) size = c.getLong(1) }
+        } }
+        name to size
+    }
+    var memberships = 0; var unresolved = 0
+    albums.forEach { album ->
+        dao.putAlbum(AlbumEntity(album.id, album.name, album.createdAt))
+        album.photos.forEach { saved ->
+            val favorite = saved.favoriteArchiveFile.takeIf { it.isNotBlank() }?.let(favoritesByArchive::get)?.favoriteFile?.mediaUri
+            val exact = candidates.firstOrNull { it.toString() == saved.uri }
+            val paths = if (exact == null && saved.relativePath.isNotBlank()) candidates.filter { getOriginalRelativePath(it).equals(saved.relativePath, true) } else emptyList()
+            val names = if (exact == null && paths.size != 1 && saved.displayName.isNotBlank()) candidates.filter { metadata(it).let { data -> data.first.equals(saved.displayName, true) && (saved.sizeBytes < 0 || data.second == saved.sizeBytes) } } else emptyList()
+            val uri = favorite ?: exact ?: paths.singleOrNull() ?: names.singleOrNull()
+            if (uri == null) unresolved++ else {
+                val documentId = runCatching { if (DocumentsContract.isDocumentUri(context, uri)) DocumentsContract.getDocumentId(uri) else null }.getOrNull()
+                val data = metadata(uri)
+                val stableKey = albumStableKey(uri.authority.orEmpty(), documentId, uri.scheme, uri.path, uri.normalizeScheme().toString())
+                val existing = dao.photoByStableKey(stableKey)
+                val photo = existing ?: CatalogPhotoEntity(java.util.UUID.randomUUID().toString(), stableKey, uri.toString(), data.first, data.second.takeIf { it >= 0 })
+                dao.putPhoto(photo.copy(currentUri = uri.toString()))
+                dao.addToAlbum(AlbumPhotoCrossRef(album.id, photo.id)); memberships++
+            }
+        }
+    }
+    return Triple(albums.size, memberships, unresolved)
 }
 
 private fun copyCurrentZipEntryToTemp(

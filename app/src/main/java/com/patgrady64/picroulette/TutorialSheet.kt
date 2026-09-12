@@ -25,6 +25,9 @@ fun PicRouletteTutorialSheet(themeColor: Color, onFinished: () -> Unit) {
             TutorialPage("Choose your Library Folders", "Library Folders are where PicRoulette gets its photos. Choose your folders, then Start Roulette to shuffle through them.", Icons.Rounded.FolderCopy),
             TutorialPage("Choose what to Roulette", "Start Roulette uses your Library Folders. Pick a Roulette lets you shuffle only your Favorites or one specific Album.", Icons.Rounded.Shuffle),
             TutorialPage("Organize while you browse", "The heart controls Favorites. Albums can hold a photo in one or several collections. A highlighted Albums icon means the photo is already in an album.", Icons.Rounded.PhotoAlbum),
+            TutorialPage("Smart Roulette · Pro", "Fine-tune Roulette before you start. Filter by date, use Favorites only, or exclude Favorites so Roulette focuses on exactly the photos you want to rediscover.", Icons.Rounded.FilterAlt),
+            TutorialPage("Roulette History · Pro", "PicRoulette Pro remembers your 300 most recently shown Roulette photos. Open History to find and reopen a photo you just saw, or clear the history when you want a fresh record.", Icons.Rounded.History),
+            TutorialPage("Favorites tools · Pro", "Pro lets you move the PR_FAVS Favorites folder to a location you choose and back up or restore your Favorites. PicRoulette keeps its links updated when the Favorites location changes.", Icons.Rounded.Favorite),
             TutorialPage("You're ready", "Tap a photo to show its controls, then favorite it, add it to albums, or view its details. Replay this tutorial anytime from Options.", Icons.Rounded.CheckCircle)
         )
     }

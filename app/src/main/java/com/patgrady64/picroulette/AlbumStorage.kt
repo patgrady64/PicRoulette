@@ -5,6 +5,8 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import java.util.UUID
+import java.io.File
+import java.io.FileNotFoundException
 
 data class PhotoAlbum(
     val id: String,
@@ -229,6 +231,23 @@ fun resolveAlbumPhotos(
         }.getOrDefault(false)
     }
 
+    // Only prune an album membership when Android can tell us the backing file is
+    // genuinely gone. A generic permission/read failure is not enough: albums must
+    // survive temporary provider or permission problems.
+    fun definitelyMissing(uri: Uri): Boolean {
+        if (uri.scheme == "file") return uri.path?.let { !File(it).exists() } == true
+        return try {
+            context.contentResolver.openFileDescriptor(uri, "r")?.close()
+            false
+        } catch (_: FileNotFoundException) {
+            true
+        } catch (_: SecurityException) {
+            false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     val favoriteMappings = getFavoriteMappings(context)
         .filter { mapping ->
             !mapping.isDeleted &&
@@ -326,6 +345,11 @@ fun resolveAlbumPhotos(
 
                     if (favoriteCopy != null) {
                         resolved += favoriteCopy
+                    } else if (definitelyMissing(oldUri)) {
+                        // The photo was deleted outside PicRoulette (for example by
+                        // SpaceTrace or Android Files). Remove only the stale album
+                        // membership; never delete another copy of the photo.
+                        dao.removeFromAlbum(albumId = albumId, photoId = stored.id)
                     }
                 }
             }

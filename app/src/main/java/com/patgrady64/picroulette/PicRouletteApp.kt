@@ -156,7 +156,7 @@ fun PicRouletteApp(themeColor: Color) {
     var showRouletteCollectionPicker by remember { mutableStateOf(false) }
     var showSmartRoulette by remember { mutableStateOf(false) }
     var showRouletteHistory by remember { mutableStateOf(false) }
-    var smartFilters by remember { mutableStateOf(ProRouletteFilters()) }
+    var smartFilters by remember { mutableStateOf(loadProRouletteFilters(context)) }
     var historyGeneration by remember { mutableIntStateOf(0) }
     var showProUpgrade by remember { mutableStateOf(false) }
     var isAlbumMode by remember { mutableStateOf(false) }
@@ -206,6 +206,9 @@ fun PicRouletteApp(themeColor: Color) {
     var isMovingFavorites by remember { mutableStateOf(false) }
     var favoriteFolderMigrationProgress by remember {
         mutableStateOf<FavoriteFolderMigrationProgress?>(null)
+    }
+    var favoriteFolderMigrationStartedAt by remember {
+        mutableStateOf(0L)
     }
     var favoriteFolderLocation by remember {
         mutableStateOf(favoriteFolderDescription(context))
@@ -283,10 +286,12 @@ fun PicRouletteApp(themeColor: Color) {
     DisposableEffect(
         isPlaying,
         keepScreenAwakeEnabled,
-        isImportingFavorites
+        isImportingFavorites,
+        isMovingFavorites
     ) {
         currentView.keepScreenOn =
             isImportingFavorites ||
+                isMovingFavorites ||
                 (isPlaying && keepScreenAwakeEnabled)
 
         onDispose {
@@ -634,6 +639,10 @@ fun PicRouletteApp(themeColor: Color) {
                     favoriteMappings =
                         importResult.updatedMappings
 
+                    albums = withContext(Dispatchers.IO) {
+                        loadAlbums(context)
+                    }
+
                     saveFavoriteMappings(
                         context,
                         favoriteMappings
@@ -692,6 +701,14 @@ fun PicRouletteApp(themeColor: Color) {
                             append(
                                 " • ${importResult.failedCount} failed"
                             )
+                        }
+
+                        if (importResult.restoredAlbumCount > 0) {
+                            append(" • ${importResult.restoredAlbumCount} albums restored")
+                        }
+
+                        if (importResult.unresolvedAlbumPhotoCount > 0) {
+                            append(" • ${importResult.unresolvedAlbumPhotoCount} album photos not found")
                         }
 
                         if (
@@ -777,6 +794,7 @@ fun PicRouletteApp(themeColor: Color) {
         showOptionsSheet = false
         isMovingFavorites = true
         val migrationStartedAt = System.currentTimeMillis()
+        favoriteFolderMigrationStartedAt = migrationStartedAt
         favoriteFolderMigrationProgress = FavoriteFolderMigrationProgress(
             completed = 0,
             total = 0,
@@ -870,6 +888,7 @@ fun PicRouletteApp(themeColor: Color) {
 
             val favoritesSnapshot = favoriteFiles.toList()
             val mappingsSnapshot = favoriteMappings.toList()
+            val albumsSnapshot = albums.toList()
 
             isExportingFavorites = true
 
@@ -880,7 +899,8 @@ fun PicRouletteApp(themeColor: Color) {
                             context = context,
                             destinationUri = destinationUri,
                             favorites = favoritesSnapshot,
-                            mappings = mappingsSnapshot
+                            mappings = mappingsSnapshot,
+                            albums = albumsSnapshot
                         )
                     }
                 }
@@ -1158,7 +1178,7 @@ fun PicRouletteApp(themeColor: Color) {
                                     )
 
                                     val filtered = if (isPro) applyProRouletteFilters(context, sourceImages, favoriteMappings.map { it.originalUri }.filter { it.isNotBlank() }.toSet(), smartFilters) else sourceImages
-                                    val result: List<Uri> = if (isPro) prepareNoRepeatDeck(context, filtered) else filtered.shuffled()
+                                    val result: List<Uri> = filtered.shuffled()
 
                                     android.util.Log.i(
                                         "PR_VIEWER",
@@ -1431,6 +1451,32 @@ fun PicRouletteApp(themeColor: Color) {
                                     migrationProgress.completed.toFloat() /
                                         migrationProgress.total.toFloat()
                                     ).coerceIn(0f, 1f)
+                                val percent = (fraction * 100f).toInt()
+                                val etaText = when {
+                                    migrationProgress.completed >=
+                                        migrationProgress.total ->
+                                        "Finishing…"
+
+                                    migrationProgress.completed < 3 ->
+                                        "Calculating time remaining…"
+
+                                    favoriteFolderMigrationStartedAt <= 0L ->
+                                        "Calculating time remaining…"
+
+                                    else -> {
+                                        val elapsedMillis =
+                                            (System.currentTimeMillis() -
+                                                favoriteFolderMigrationStartedAt)
+                                                .coerceAtLeast(0L)
+                                        val remainingItems =
+                                            migrationProgress.total -
+                                                migrationProgress.completed
+                                        val remainingMillis =
+                                            elapsedMillis * remainingItems /
+                                                migrationProgress.completed
+                                        formatFavoriteMoveEta(remainingMillis)
+                                    }
+                                }
                                 LinearProgressIndicator(
                                     progress = { fraction },
                                     modifier = Modifier.fillMaxWidth()
@@ -1438,7 +1484,14 @@ fun PicRouletteApp(themeColor: Color) {
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Text(
                                     "${migrationProgress.completed} of " +
-                                        "${migrationProgress.total} favorites"
+                                        "${migrationProgress.total} favorites • " +
+                                        "$percent%"
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    etaText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.Gray
                                 )
                             } else {
                                 LinearProgressIndicator(
@@ -1460,6 +1513,7 @@ fun PicRouletteApp(themeColor: Color) {
             if (showBackupRestore) {
                 BackupRestoreSheet(
                     favoriteCount = favoriteFiles.size,
+                    albumCount = albums.size,
                     linkedFavoriteCount = favoriteMappings.count {
                         it.originalUri.isNotBlank() &&
                             it.favoriteUri.isNotBlank()
@@ -1477,7 +1531,7 @@ fun PicRouletteApp(themeColor: Color) {
                     },
                     onExport = {
                         if (
-                            favoriteFiles.isNotEmpty() &&
+                            (favoriteFiles.isNotEmpty() || albums.isNotEmpty()) &&
                             !isExportingFavorites &&
                             !isImportingFavorites &&
                             !isMigratingFavoriteLinks
@@ -1540,12 +1594,10 @@ fun PicRouletteApp(themeColor: Color) {
                                     context,
                                     VibrationStyle.TICK
                                 ); if (currentIndex.intValue >= activeSessionList.size - 1) {
-                                    if (isPro && isNoRepeatsEnabled(context) && activeSessionSource.isNotEmpty()) {
-                                        activeSessionList.clear()
-                                        activeSessionList.addAll(prepareNoRepeatDeck(context, activeSessionSource))
-                                    } else {
-                                        reshuffleDeckAvoidingBoundaryRepeat(activeSessionList)
-                                    }
+                                    // Every Roulette deck contains each eligible photo exactly once.
+                                    // After the deck is exhausted, reshuffle it for the next cycle while
+                                    // avoiding the just-shown photo at the new cycle boundary.
+                                    reshuffleDeckAvoidingBoundaryRepeat(activeSessionList)
                                     currentIndex.intValue = 0
                                     showShuffleToast = true
                                 } else {
@@ -3135,7 +3187,7 @@ fun PicRouletteApp(themeColor: Color) {
                     activeSessionList.clear()
                     activeSessionSource.clear()
                     activeSessionSource.addAll(favoriteFiles.map { it.mediaUri })
-                    activeSessionList.addAll(if (isPro) prepareNoRepeatDeck(context, activeSessionSource) else activeSessionSource.shuffled())
+                    activeSessionList.addAll(activeSessionSource.shuffled())
                     currentIndex.intValue = 0
                     showRouletteCollectionPicker = false
                     isPlaying = true
@@ -3148,7 +3200,7 @@ fun PicRouletteApp(themeColor: Color) {
                     activeSessionList.clear()
                     activeSessionSource.clear()
                     activeSessionSource.addAll(photos)
-                    activeSessionList.addAll(if (isPro) prepareNoRepeatDeck(context, activeSessionSource) else activeSessionSource.shuffled())
+                    activeSessionList.addAll(activeSessionSource.shuffled())
                     currentIndex.intValue = 0
                     showRouletteCollectionPicker = false
                     isPlaying = true
@@ -3167,12 +3219,37 @@ fun PicRouletteApp(themeColor: Color) {
     if (showSmartRoulette) {
         SmartRouletteSheet(
             initial = smartFilters,
-            noRepeats = isNoRepeatsEnabled(context),
-            onApply = { filters, noRepeats ->
+            onFiltersChanged = { filters ->
+                // Keep the user's Smart Filter choice as soon as they select it.
+                // This prevents reopening the sheet from ever falling back to All photos.
                 smartFilters = filters
-                setNoRepeatsEnabled(context, noRepeats)
+                saveProRouletteFilters(context, filters)
+            },
+            onApply = { filters ->
+                smartFilters = filters
+                saveProRouletteFilters(context, filters)
                 showSmartRoulette = false
-                Toast.makeText(context, "Smart Roulette settings applied", Toast.LENGTH_SHORT).show()
+                val sourceImages = pickedFolderImages.value.toList()
+                val favoriteOriginalUris = favoriteMappings.asSequence()
+                    .filter { !it.isDeleted && it.originalUri.isNotBlank() }
+                    .map { it.originalUri }.toSet()
+                scope.launch {
+                    val filtered = withContext(Dispatchers.IO) {
+                        applyProRouletteFilters(context, sourceImages, favoriteOriginalUris, filters)
+                    }
+                    if (filtered.isNotEmpty()) {
+                        isFavoritesMode = false
+                        isAlbumMode = false
+                        activeSessionList.clear()
+                        activeSessionSource.clear()
+                        activeSessionSource.addAll(filtered)
+                        activeSessionList.addAll(filtered.shuffled())
+                        currentIndex.intValue = 0
+                        isPlaying = true
+                    } else {
+                        Toast.makeText(context, "No photos match those Smart Filters.", Toast.LENGTH_SHORT).show()
+                    }
+                }
             },
             onDismiss = { showSmartRoulette = false }
         )
@@ -3224,7 +3301,7 @@ fun PicRouletteApp(themeColor: Color) {
                     activeSessionList.clear()
                     activeSessionSource.clear()
                     activeSessionSource.addAll(photos)
-                    activeSessionList.addAll(if (isPro) prepareNoRepeatDeck(context, activeSessionSource) else activeSessionSource.shuffled())
+                    activeSessionList.addAll(activeSessionSource.shuffled())
                     currentIndex.intValue = 0
                     showAlbumsBrowser = false
                     isPlaying = true
@@ -3244,6 +3321,33 @@ fun PicRouletteApp(themeColor: Color) {
             progress = favoritesImportProgress,
             themeColor = themeColor
         )
+    }
+}
+
+private fun formatFavoriteMoveEta(remainingMillis: Long): String {
+    val remainingSeconds =
+        ((remainingMillis + 999L) / 1_000L).coerceAtLeast(1L)
+
+    if (remainingSeconds < 60L) {
+        return "Less than a minute remaining"
+    }
+
+    val remainingMinutes = (remainingSeconds + 59L) / 60L
+
+    if (remainingMinutes < 60L) {
+        return if (remainingMinutes == 1L) {
+            "About 1 minute remaining"
+        } else {
+            "About $remainingMinutes minutes remaining"
+        }
+    }
+
+    val hours = remainingMinutes / 60L
+    val minutes = remainingMinutes % 60L
+    return if (minutes == 0L) {
+        "About $hours ${if (hours == 1L) "hour" else "hours"} remaining"
+    } else {
+        "About ${hours}h ${minutes}m remaining"
     }
 }
 

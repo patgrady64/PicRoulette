@@ -5,6 +5,8 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import com.patgrady64.picroulette.FavoriteFile
 import com.patgrady64.picroulette.FavoriteMapping
+import com.patgrady64.picroulette.PhotoAlbum
+import com.patgrady64.picroulette.getOriginalRelativePath
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -30,7 +32,8 @@ fun exportFavoritesZip(
     context: Context,
     destinationUri: Uri,
     favorites: List<FavoriteFile>,
-    mappings: List<FavoriteMapping>
+    mappings: List<FavoriteMapping>,
+    albums: List<PhotoAlbum> = emptyList()
 ): FavoritesZipExportResult {
 
     val outputStream = context.contentResolver
@@ -185,7 +188,7 @@ fun exportFavoritesZip(
 
             put(
                 "backupVersion",
-                2
+                3
             )
 
             put(
@@ -229,6 +232,33 @@ fun exportFavoritesZip(
                 "files",
                 manifestFiles
             )
+
+            put("albums", JSONArray().apply {
+                albums.forEach { album ->
+                    put(JSONObject().apply {
+                        put("id", album.id)
+                        put("name", album.name)
+                        put("createdAt", album.createdAt)
+                        put("photos", JSONArray().apply {
+                            album.photoUris.forEach { uriText ->
+                                val uri = Uri.parse(uriText)
+                                val details = readMediaDetails(context, uri, uri.lastPathSegment ?: "")
+                                val favoriteArchive = (0 until manifestFiles.length())
+                                    .mapNotNull(manifestFiles::optJSONObject)
+                                    .firstOrNull { it.optString("favoriteMediaUri") == uriText }
+                                    ?.optString("archiveFile").orEmpty()
+                                put(JSONObject().apply {
+                                    put("uri", uriText)
+                                    put("relativePath", getOriginalRelativePath(uri))
+                                    put("displayName", details.displayName)
+                                    put("sizeBytes", querySize(context, uri))
+                                    put("favoriteArchiveFile", favoriteArchive)
+                                })
+                            }
+                        })
+                    })
+                }
+            })
         }
 
         zipOutput.putNextEntry(
@@ -345,3 +375,9 @@ private fun formattedCurrentDate(): String {
         Locale.US
     ).format(Date())
 }
+
+private fun querySize(context: Context, uri: Uri): Long = runCatching {
+    context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else -1L
+    } ?: -1L
+}.getOrDefault(-1L)

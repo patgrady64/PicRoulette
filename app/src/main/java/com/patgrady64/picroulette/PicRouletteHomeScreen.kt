@@ -184,7 +184,7 @@ fun PicRouletteHomeScreen(
                 HomeActionTile(
                     modifier = Modifier.weight(1f),
                     title = "Smart Filters",
-                    subtitle = if (isPro) "Date, favorites, no repeats" else "Pro feature",
+                    subtitle = if (isPro) "Date and favorites filters" else "Pro feature",
                     icon = Icons.Rounded.Settings,
                     accentColor = Color(0xFFB79CFF),
                     enabled = true,

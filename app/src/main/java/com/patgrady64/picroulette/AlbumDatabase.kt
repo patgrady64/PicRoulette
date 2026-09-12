@@ -67,7 +67,7 @@ interface AlbumDao {
     @Upsert
     fun putPhoto(photo: CatalogPhotoEntity)
 
-    @Insert(onConflict = OnConflictStrategy.ABORT)
+    @Upsert
     fun putAlbum(album: AlbumEntity)
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)

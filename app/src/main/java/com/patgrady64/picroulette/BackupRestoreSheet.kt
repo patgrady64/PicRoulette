@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun BackupRestoreSheet(
     favoriteCount: Int,
+    albumCount: Int,
     linkedFavoriteCount: Int,
     sourcePhotoCount: Int,
     isExporting: Boolean,
@@ -73,7 +74,7 @@ fun BackupRestoreSheet(
             Spacer(modifier = Modifier.height(5.dp))
 
             Text(
-                text = "Protect your edited favorite copies and the links back to their original photos.",
+                text = "Protect your edited favorite copies, original-photo links, albums, and album memberships.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.Gray
             )
@@ -90,12 +91,12 @@ fun BackupRestoreSheet(
 
             BackupActionCard(
                 title = "Create a backup",
-                description = "Exports every saved favorite exactly as it appears, plus portable original-photo metadata.",
+                description = "Exports every saved favorite exactly as it appears, plus portable original-photo metadata and albums.",
                 accentColor = themeColor
             ) {
                 Button(
                     onClick = onExport,
-                    enabled = favoriteCount > 0 &&
+                    enabled = (favoriteCount > 0 || albumCount > 0) &&
                             !isExporting &&
                             !isImporting &&
                             !isRepairing,
@@ -114,7 +115,7 @@ fun BackupRestoreSheet(
                             contentDescription = null
                         )
                         Spacer(modifier = Modifier.width(9.dp))
-                        Text("Export $favoriteCount favorites")
+                        Text("Export backup")
                     }
                 }
             }
@@ -123,7 +124,7 @@ fun BackupRestoreSheet(
 
             BackupActionCard(
                 title = "Restore from a backup",
-                description = "Imports missing favorite files without replacing, renaming, or duplicating favorites already present.",
+                description = "Imports missing favorites and restores albums without replacing or duplicating favorites already present.",
                 accentColor = Color(0xFF57D5C7)
             ) {
                 OutlinedButton(
