@@ -29,6 +29,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun AddToAlbumsSheet(
     currentPhoto: Uri,
+    linkedPhotoUris: Set<String> = setOf(currentPhoto.toString()),
     albums: List<PhotoAlbum>,
     onToggle: (String, Boolean) -> Unit,
     onCreate: (String) -> Unit,
@@ -42,7 +43,7 @@ fun AddToAlbumsSheet(
             Spacer(Modifier.height(8.dp))
             if (albums.isEmpty()) Text("Create your first album for this photo.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             albums.forEach { album ->
-                val checked = currentPhoto.toString() in album.photoUris
+                val checked = album.photoUris.any { it in linkedPhotoUris }
                 fun toggleAndClose(included: Boolean) {
                     onToggle(album.id, included)
                     onDismiss()
@@ -163,7 +164,8 @@ private fun AlbumBrowserRow(
     onPlay: (() -> Unit)?,
     onEdit: (() -> Unit)?,
     onDelete: (() -> Unit)?,
-    isLoading: Boolean = false
+    isLoading: Boolean = false,
+    hidePlayButtonWhileLoading: Boolean = false
 ) {
     val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
     val tileColor = albumMonogramColor(name)
@@ -189,16 +191,23 @@ private fun AlbumBrowserRow(
         if (onEdit != null) IconButton(onClick = onEdit) { Icon(Icons.Rounded.Edit, "Rename") }
         if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Rounded.DeleteOutline, "Delete") }
         if (onPlay != null) {
-            TextButton(onClick = onPlay, enabled = enabled) {
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("Loading…")
-                } else {
-                    Text("Roulette")
+            if (isLoading && hidePlayButtonWhileLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.dp
+                )
+            } else {
+                TextButton(onClick = onPlay, enabled = enabled) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Loading…")
+                    } else {
+                        Text("Roulette")
+                    }
                 }
             }
         }
@@ -209,6 +218,7 @@ private fun AlbumBrowserRow(
 @Composable
 fun RouletteCollectionSheet(
     favoriteCount: Int,
+    isFavoritesLoading: Boolean,
     albums: List<PhotoAlbum>,
     isPro: Boolean,
     allPhotos: List<Uri>,
@@ -238,10 +248,12 @@ fun RouletteCollectionSheet(
                     AlbumBrowserRow(
                         name = "Favorites",
                         count = favoriteCount,
-                        enabled = favoriteCount > 0,
+                        enabled = favoriteCount > 0 && !isFavoritesLoading,
                         onPlay = onPlayFavorites,
                         onEdit = null,
-                        onDelete = null
+                        onDelete = null,
+                        isLoading = isFavoritesLoading,
+                        hidePlayButtonWhileLoading = true
                     )
                 }
                 if (isPro) {

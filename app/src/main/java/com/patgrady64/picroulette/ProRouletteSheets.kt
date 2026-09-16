@@ -50,30 +50,57 @@ fun SmartRouletteSheet(
 @Composable
 fun RouletteHistorySheet(
     history: List<RouletteHistoryEntry>,
+    recentFolders: List<RecentFolderEntry>,
     onOpen: (Uri) -> Unit,
-    onClear: () -> Unit,
+    onOpenFolder: (RecentFolderEntry) -> Unit,
+    onClearPhotos: () -> Unit,
+    onClearFolders: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    var foldersTab by remember { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.75f).padding(horizontal = 20.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("Roulette History · Pro", style = MaterialTheme.typography.headlineSmall)
-                TextButton(onClick = onClear, enabled = history.isNotEmpty()) { Text("Clear") }
+                Text("History · Pro", style = MaterialTheme.typography.headlineSmall)
+                TextButton(
+                    onClick = if (foldersTab) onClearFolders else onClearPhotos,
+                    enabled = if (foldersTab) recentFolders.isNotEmpty() else history.isNotEmpty()
+                ) { Text("Clear") }
             }
-            Text("Recently shown photos. Tap one to reopen it.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TabRow(selectedTabIndex = if (foldersTab) 1 else 0) {
+                Tab(selected = !foldersTab, onClick = { foldersTab = false }, text = { Text("Recent Photos") })
+                Tab(selected = foldersTab, onClick = { foldersTab = true }, text = { Text("Recent Folders") })
+            }
             Spacer(Modifier.height(12.dp))
-            if (history.isEmpty()) Text("No Roulette history yet.", modifier = Modifier.padding(vertical = 24.dp))
-            else LazyColumn(Modifier.weight(1f)) {
-                items(history, key = { "${it.uri}_${it.viewedAt}" }) { entry ->
-                    val date = remember(entry.viewedAt) { SimpleDateFormat("MMM d, yyyy · h:mm a", Locale.getDefault()).format(Date(entry.viewedAt)) }
-                    Column(Modifier.fillMaxWidth().clickable { onOpen(entry.uri) }.padding(vertical = 12.dp)) {
-                        Text(entry.uri.lastPathSegment ?: "Photo", maxLines = 1)
-                        Text(date, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!foldersTab) {
+                Text("Recently shown photos. Tap one to reopen it.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (history.isEmpty()) Text("No photo history yet.", modifier = Modifier.padding(vertical = 24.dp))
+                else LazyColumn(Modifier.weight(1f)) {
+                    items(history, key = { "${it.uri}_${it.viewedAt}" }) { entry ->
+                        val date = remember(entry.viewedAt) { SimpleDateFormat("MMM d, yyyy · h:mm a", Locale.getDefault()).format(Date(entry.viewedAt)) }
+                        Column(Modifier.fillMaxWidth().clickable { onOpen(entry.uri) }.padding(vertical = 12.dp)) {
+                            Text(entry.uri.lastPathSegment ?: "Photo", maxLines = 1)
+                            Text(date, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        HorizontalDivider()
                     }
-                    HorizontalDivider()
+                }
+            } else {
+                Text("Your 10 most recently viewed folders. Tap one to reopen its photos.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (recentFolders.isEmpty()) Text("No folder history yet.", modifier = Modifier.padding(vertical = 24.dp))
+                else LazyColumn(Modifier.weight(1f)) {
+                    items(recentFolders, key = { it.key }) { entry ->
+                        val date = remember(entry.viewedAt) { SimpleDateFormat("MMM d, yyyy · h:mm a", Locale.getDefault()).format(Date(entry.viewedAt)) }
+                        Column(Modifier.fillMaxWidth().clickable { onOpenFolder(entry) }.padding(vertical = 12.dp)) {
+                            Text(entry.label, maxLines = 1)
+                            Text(date, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        HorizontalDivider()
+                    }
                 }
             }
             Spacer(Modifier.height(12.dp))
         }
     }
 }
+

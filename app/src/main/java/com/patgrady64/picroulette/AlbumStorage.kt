@@ -392,6 +392,23 @@ fun loadAlbums(
         }
 }
 
+/** Treat an original and its saved favorite/crop as one logical album photo. */
+fun canonicalAlbumPhotoUri(context: Context, uri: Uri): Uri {
+    val raw = uri.toString()
+    val mapping = getFavoriteMappings(context).firstOrNull {
+        !it.isDeleted && (it.originalUri == raw || it.favoriteUri == raw)
+    }
+    return mapping?.originalUri?.takeIf { it.isNotBlank() }?.let(Uri::parse) ?: uri
+}
+
+fun linkedAlbumPhotoUris(context: Context, uri: Uri): Set<String> {
+    val raw = uri.toString()
+    val mapping = getFavoriteMappings(context).firstOrNull {
+        !it.isDeleted && (it.originalUri == raw || it.favoriteUri == raw)
+    }
+    return if (mapping == null) setOf(raw) else setOf(mapping.originalUri, mapping.favoriteUri).filter { it.isNotBlank() }.toSet()
+}
+
 fun createAlbum(
     context: Context,
     albums: List<PhotoAlbum>,
@@ -416,7 +433,7 @@ fun createAlbum(
     )
 
     if (initialPhoto != null) {
-        val photo = ensurePhoto(context, initialPhoto)
+        val photo = ensurePhoto(context, canonicalAlbumPhotoUri(context, initialPhoto))
 
         dao.addToAlbum(
             AlbumPhotoCrossRef(
@@ -437,7 +454,8 @@ fun setPhotoInAlbum(
     included: Boolean
 ): List<PhotoAlbum> {
     val dao = PicRouletteDatabase.get(context).albumDao()
-    val catalogPhoto = ensurePhoto(context, photo)
+    val canonical = canonicalAlbumPhotoUri(context, photo)
+    val catalogPhoto = ensurePhoto(context, canonical)
 
     if (included) {
         dao.addToAlbum(
@@ -447,10 +465,12 @@ fun setPhotoInAlbum(
             )
         )
     } else {
-        dao.removeFromAlbum(
-            albumId = albumId,
-            photoId = catalogPhoto.id
-        )
+        // Remove the canonical membership and any legacy membership that may
+        // have been stored against the favorite/cropped copy itself.
+        linkedAlbumPhotoUris(context, photo).forEach { raw ->
+            val entity = ensurePhoto(context, Uri.parse(raw))
+            dao.removeFromAlbum(albumId = albumId, photoId = entity.id)
+        }
     }
 
     return loadAlbums(context)

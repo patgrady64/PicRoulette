@@ -10,10 +10,59 @@ import org.json.JSONObject
 private const val PRO_ROULETTE_PREFS = "picroulette_pro_roulette"
 private const val HISTORY_KEY = "history_json"
 private const val HISTORY_LIMIT = 300
+private const val FOLDER_HISTORY_KEY = "folder_history_json"
+private const val FOLDER_HISTORY_LIMIT = 10
 private const val DATE_FILTER_KEY = "date_filter"
 private const val FAVORITE_FILTER_KEY = "favorite_filter"
 
 data class RouletteHistoryEntry(val uri: Uri, val viewedAt: Long)
+data class RecentFolderEntry(val key: String, val label: String, val viewedAt: Long)
+
+/** Returns a stable-enough parent-folder identity for MediaStore/SAF photo URIs. */
+fun photoParentFolder(uri: Uri): Pair<String, String>? {
+    val raw = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull()
+        ?: uri.path?.takeIf { it.isNotBlank() }
+        ?: return null
+    val normalized = raw.replace('\\', '/')
+    val parent = normalized.substringBeforeLast('/', missingDelimiterValue = "")
+        .takeIf { it.isNotBlank() } ?: return null
+    val label = parent.substringAfterLast('/').substringAfterLast(':').ifBlank { "Folder" }
+    return "${uri.authority.orEmpty()}|$parent" to label
+}
+
+fun recordRecentFolderForPhoto(context: Context, uri: Uri) {
+    val (key, label) = photoParentFolder(uri) ?: return
+    val existing = loadRecentFolders(context).filterNot { it.key == key }.toMutableList()
+    existing.add(0, RecentFolderEntry(key, label, System.currentTimeMillis()))
+    val array = JSONArray()
+    existing.take(FOLDER_HISTORY_LIMIT).forEach {
+        array.put(JSONObject().put("key", it.key).put("label", it.label).put("viewedAt", it.viewedAt))
+    }
+    context.getSharedPreferences(PRO_ROULETTE_PREFS, Context.MODE_PRIVATE).edit()
+        .putString(FOLDER_HISTORY_KEY, array.toString()).apply()
+}
+
+fun loadRecentFolders(context: Context): List<RecentFolderEntry> {
+    val raw = context.getSharedPreferences(PRO_ROULETTE_PREFS, Context.MODE_PRIVATE)
+        .getString(FOLDER_HISTORY_KEY, null) ?: return emptyList()
+    return runCatching {
+        val array = JSONArray(raw)
+        buildList {
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                add(RecentFolderEntry(obj.getString("key"), obj.getString("label"), obj.getLong("viewedAt")))
+            }
+        }
+    }.getOrDefault(emptyList())
+}
+
+fun clearRecentFolders(context: Context) {
+    context.getSharedPreferences(PRO_ROULETTE_PREFS, Context.MODE_PRIVATE).edit()
+        .remove(FOLDER_HISTORY_KEY).apply()
+}
+
+fun photosInRecentFolder(photos: List<Uri>, folderKey: String): List<Uri> =
+    photos.filter { photoParentFolder(it)?.first == folderKey }
 
 enum class ProDateFilter(val label: String) {
     ANY("Any date"), LAST_YEAR("Last 12 months"), OLDER_1("Older than 1 year"), OLDER_3("Older than 3 years"), OLDER_5("Older than 5 years")

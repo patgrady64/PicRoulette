@@ -150,6 +150,7 @@ fun PicRouletteApp(themeColor: Color) {
         mutableStateOf(initialFavoriteMappings.toMutableList())
     }
     var favoritesRefreshGeneration by remember { mutableIntStateOf(0) }
+    var isFavoritesLoading by remember { mutableStateOf(true) }
     var albums by remember { mutableStateOf(loadAlbums(context)) }
     var showAddToAlbums by remember { mutableStateOf(false) }
     var showAlbumsBrowser by remember { mutableStateOf(false) }
@@ -415,6 +416,7 @@ fun PicRouletteApp(themeColor: Color) {
     }
 
     fun refreshFavs(context: Context, onResult: (List<FavoriteFile>) -> Unit) {
+        isFavoritesLoading = true
         /* A newer refresh always wins over an older disk snapshot. */
         favoritesRefreshGeneration++
         val thisRefreshGeneration = favoritesRefreshGeneration
@@ -437,6 +439,7 @@ fun PicRouletteApp(themeColor: Color) {
                         "Favorites couldn't be refreshed. Existing favorites were kept."
                     )
                     onResult(favoriteFiles)
+                    isFavoritesLoading = false
                     return@withContext
                 }
 
@@ -455,6 +458,7 @@ fun PicRouletteApp(themeColor: Color) {
                 }
 
                 onResult(diskFiles)
+                isFavoritesLoading = false
             }
         }
     }
@@ -1614,6 +1618,10 @@ fun PicRouletteApp(themeColor: Color) {
                     android.util.Log.i("PR_VIEWER", "VIEWER currentUri changed to $currentUri")
                     if (isPro && currentUri != null) {
                         recordRouletteView(context, currentUri)
+                        val folderSource = favoriteMappings.firstOrNull {
+                            !it.isDeleted && it.favoriteUri == currentUri.toString()
+                        }?.originalUri?.takeIf { it.isNotBlank() }?.let(Uri::parse) ?: currentUri
+                        recordRecentFolderForPhoto(context, folderSource)
                         historyGeneration++
                     }
                 }
@@ -1683,27 +1691,17 @@ fun PicRouletteApp(themeColor: Color) {
                             // Never parse SharedPreferences or perform storage work from
                             // composition. favoriteMappings is refreshed from the durable store
                             // by the existing favorites refresh path.
-                            val isCurrentFavoriteCopy = favoriteFiles.any { favorite ->
-                                favorite.mediaUri == currentUri ||
-                                    runCatching {
-                                        sameImage(favorite.mediaUri, currentUri)
-                                    }.getOrDefault(false)
+                            // Favorite state must belong to THIS exact library item. Using
+                            // sameImage() here can match a stale/deleted favorite copy (or a
+                            // duplicate image) after navigation and refill the heart.
+                            favoriteMappings.any { mapping ->
+                                !mapping.isDeleted &&
+                                    mapping.favoriteUri.isNotEmpty() &&
+                                    (
+                                        mapping.originalUri == currentUri.toString() ||
+                                            mapping.favoriteUri == currentUri.toString()
+                                    )
                             }
-                            isCurrentFavoriteCopy ||
-                                favoriteMappings.any { mapping ->
-                                        !mapping.isDeleted &&
-                                            mapping.favoriteUri.isNotEmpty() &&
-                                            (
-                                                mapping.originalUri == currentUri.toString() ||
-                                                    mapping.favoriteUri == currentUri.toString() ||
-                                                    runCatching {
-                                                        sameImage(Uri.parse(mapping.originalUri), currentUri)
-                                                    }.getOrDefault(false) ||
-                                                    runCatching {
-                                                        sameImage(Uri.parse(mapping.favoriteUri), currentUri)
-                                                    }.getOrDefault(false)
-                                            )
-                                    }
                         }
                     }
 
@@ -2124,21 +2122,17 @@ fun PicRouletteApp(themeColor: Color) {
                                                          * add/remove favorite toggle.
                                                          */
                                                         if (isHeartFilled) {
+                                                            // isHeartFilled is based on the exact mapping URI, so removal
+                                                            // must use the same identity rule. The old sameImage-first
+                                                            // lookup could fail to find the mapping even while the UI
+                                                            // showed a filled heart, leaving the favorite untouched.
+                                                            val currentUriString = currentUri.toString()
                                                             val mapping =
                                                                 favoriteMappings.find {
                                                                     !it.isDeleted &&
                                                                         (
-                                                                            sameImage(
-                                                                                Uri.parse(it.originalUri),
-                                                                                currentUri
-                                                                            ) ||
-                                                                                it.favoriteUri == currentUri.toString() ||
-                                                                                runCatching {
-                                                                                    sameImage(
-                                                                                        Uri.parse(it.favoriteUri),
-                                                                                        currentUri
-                                                                                    )
-                                                                                }.getOrDefault(false)
+                                                                            it.originalUri == currentUriString ||
+                                                                                it.favoriteUri == currentUriString
                                                                         )
                                                                 }
 
@@ -3156,19 +3150,59 @@ fun PicRouletteApp(themeColor: Color) {
         }
         AddToAlbumsSheet(
             currentPhoto = photo,
+            linkedPhotoUris = linkedAlbumPhotoUris(context, viewerPhoto),
             albums = albums,
             onToggle = { albumId, included ->
                 val albumName = albums.firstOrNull { it.id == albumId }?.name ?: "album"
+                val viewerPhotoString = viewerPhoto.toString()
+                val photoString = photo.toString()
+                val photoIsFavorited = favoriteMappings.any { mapping ->
+                    !mapping.isDeleted &&
+                        mapping.favoriteUri.isNotBlank() &&
+                        (
+                            mapping.originalUri == photoString ||
+                                mapping.originalUri == viewerPhotoString ||
+                                mapping.favoriteUri == viewerPhotoString
+                        )
+                }
                 albums = setPhotoInAlbum(context, albums, albumId, photo, included)
                 Toast.makeText(
                     context,
-                    if (included) "Added to $albumName" else "Removed from $albumName",
+                    if (included) {
+                        if (photoIsFavorited) {
+                            "Favorite added to album $albumName"
+                        } else {
+                            "Photo added to album $albumName"
+                        }
+                    } else {
+                        "Removed from album $albumName"
+                    },
                     Toast.LENGTH_SHORT
                 ).show()
             },
             onCreate = { name ->
+                val albumName = name.trim()
+                val viewerPhotoString = viewerPhoto.toString()
+                val photoString = photo.toString()
+                val photoIsFavorited = favoriteMappings.any { mapping ->
+                    !mapping.isDeleted &&
+                        mapping.favoriteUri.isNotBlank() &&
+                        (
+                            mapping.originalUri == photoString ||
+                                mapping.originalUri == viewerPhotoString ||
+                                mapping.favoriteUri == viewerPhotoString
+                        )
+                }
                 albums = createAlbum(context, albums, name, photo)
-                Toast.makeText(context, "Added to ${name.trim()}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    context,
+                    if (photoIsFavorited) {
+                        "Favorite added to album $albumName"
+                    } else {
+                        "Photo added to album $albumName"
+                    },
+                    Toast.LENGTH_SHORT
+                ).show()
             },
             onDismiss = { showAddToAlbums = false }
         )
@@ -3177,6 +3211,7 @@ fun PicRouletteApp(themeColor: Color) {
     if (showRouletteCollectionPicker) {
         RouletteCollectionSheet(
             favoriteCount = favoriteFiles.size,
+            isFavoritesLoading = isFavoritesLoading,
             albums = albums,
             isPro = isPro,
             allPhotos = pickedFolderImages.value,
@@ -3257,8 +3292,10 @@ fun PicRouletteApp(themeColor: Color) {
 
     if (showRouletteHistory) {
         val history = remember(historyGeneration, showRouletteHistory) { loadRouletteHistory(context) }
+        val recentFolders = remember(historyGeneration, showRouletteHistory) { loadRecentFolders(context) }
         RouletteHistorySheet(
             history = history,
+            recentFolders = recentFolders,
             onOpen = { uri ->
                 activeSessionList.clear()
                 activeSessionSource.clear()
@@ -3270,8 +3307,28 @@ fun PicRouletteApp(themeColor: Color) {
                 showRouletteHistory = false
                 isPlaying = true
             },
-            onClear = {
+            onOpenFolder = { folder ->
+                val photos = photosInRecentFolder(pickedFolderImages.value, folder.key)
+                if (photos.isNotEmpty()) {
+                    activeSessionList.clear()
+                    activeSessionSource.clear()
+                    activeSessionSource.addAll(photos)
+                    activeSessionList.addAll(photos)
+                    currentIndex.intValue = 0
+                    isFavoritesMode = false
+                    isAlbumMode = false
+                    showRouletteHistory = false
+                    isPlaying = true
+                } else {
+                    Toast.makeText(context, "That folder is no longer available in the library.", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onClearPhotos = {
                 clearRouletteHistory(context)
+                historyGeneration++
+            },
+            onClearFolders = {
+                clearRecentFolders(context)
                 historyGeneration++
             },
             onDismiss = { showRouletteHistory = false }
