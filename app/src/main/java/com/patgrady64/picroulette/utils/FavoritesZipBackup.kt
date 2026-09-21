@@ -6,6 +6,9 @@ import android.provider.OpenableColumns
 import com.patgrady64.picroulette.FavoriteFile
 import com.patgrady64.picroulette.FavoriteMapping
 import com.patgrady64.picroulette.PhotoAlbum
+import com.patgrady64.picroulette.PicRouletteDatabase
+import com.patgrady64.picroulette.favoriteIdFromFileName
+import com.patgrady64.picroulette.findFavoriteMappingForFile
 import com.patgrady64.picroulette.getOriginalRelativePath
 import org.json.JSONArray
 import org.json.JSONObject
@@ -43,6 +46,7 @@ fun exportFavoritesZip(
         )
 
     val manifestFiles = JSONArray()
+    val dao = PicRouletteDatabase.get(context).albumDao()
 
     var exportedCount = 0
     var failedCount = 0
@@ -52,11 +56,10 @@ fun exportFavoritesZip(
 
         favorites.forEachIndexed { index, favorite ->
 
-            val mapping =
-                mappings.firstOrNull {
-                    it.favoriteUri ==
-                            favorite.mediaUri.toString()
-                }
+            val mapping = findFavoriteMappingForFile(
+                mappings = mappings,
+                favoriteFile = favorite
+            )
 
             val sourceUri = favorite.mediaUri
 
@@ -116,6 +119,25 @@ fun exportFavoritesZip(
                                 )
 
                                 put(
+                                    "photoId",
+                                    mapping?.photoId.orEmpty()
+                                )
+
+                                put(
+                                    "favoriteId",
+                                    mapping?.favoriteId
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?: favoriteIdFromFileName(mediaDetails.displayName)
+                                )
+
+                                put(
+                                    "favoriteFileName",
+                                    mapping?.favoriteFileName
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?: mediaDetails.displayName
+                                )
+
+                                put(
                                     "originalRelativePath",
                                     mapping
                                         ?.originalRelativePath
@@ -133,7 +155,9 @@ fun exportFavoritesZip(
                                     "hasSourceLink",
                                     mapping != null &&
                                         !mapping.isDeleted &&
-                                        mapping.originalUri.isNotBlank()
+                                        (mapping.photoId.isNotBlank() ||
+                                            mapping.originalUri.isNotBlank() ||
+                                            mapping.originalSha256.isNotBlank())
                                 )
 
                                 put(
@@ -188,7 +212,7 @@ fun exportFavoritesZip(
 
             put(
                 "backupVersion",
-                3
+                4
             )
 
             put(
@@ -217,14 +241,18 @@ fun exportFavoritesZip(
             )
 
             /*
-             * This first backup protects the edited copies.
-             * Source-photo links will be added in the migration phase.
+             * Source-photo metadata and durable favorite/photo identities are
+             * included whenever they are available. Older/partially repaired
+             * mappings remain exportable without discarding the favorite copy.
              */
             put(
                 "containsSourceLinks",
                 mappings.any {
                     it.favoriteUri.isNotBlank() &&
-                        (it.isDeleted || it.originalUri.isNotBlank())
+                        (it.isDeleted ||
+                            it.photoId.isNotBlank() ||
+                            it.originalUri.isNotBlank() ||
+                            it.originalSha256.isNotBlank())
                 }
             )
 
@@ -242,16 +270,67 @@ fun exportFavoritesZip(
                         put("photos", JSONArray().apply {
                             album.photoUris.forEach { uriText ->
                                 val uri = Uri.parse(uriText)
-                                val details = readMediaDetails(context, uri, uri.lastPathSegment ?: "")
+                                val details = readMediaDetails(
+                                    context,
+                                    uri,
+                                    uri.lastPathSegment ?: ""
+                                )
+                                val catalogPhoto = dao.photoByCurrentUri(uriText)
+                                val mapping = mappings.firstOrNull { candidate ->
+                                    (catalogPhoto != null &&
+                                        candidate.photoId.isNotBlank() &&
+                                        candidate.photoId == catalogPhoto.id) ||
+                                        candidate.originalUri == uriText ||
+                                        candidate.favoriteUri == uriText
+                                }
                                 val favoriteArchive = (0 until manifestFiles.length())
                                     .mapNotNull(manifestFiles::optJSONObject)
-                                    .firstOrNull { it.optString("favoriteMediaUri") == uriText }
-                                    ?.optString("archiveFile").orEmpty()
+                                    .firstOrNull { fileObject ->
+                                        val savedFavoriteId = fileObject.optString("favoriteId")
+                                        (mapping?.favoriteId?.isNotBlank() == true &&
+                                            savedFavoriteId.equals(mapping.favoriteId, ignoreCase = true)) ||
+                                            fileObject.optString("favoriteMediaUri") == mapping?.favoriteUri
+                                    }
+                                    ?.optString("archiveFile")
+                                    .orEmpty()
+
                                 put(JSONObject().apply {
                                     put("uri", uriText)
-                                    put("relativePath", getOriginalRelativePath(uri))
-                                    put("displayName", details.displayName)
-                                    put("sizeBytes", querySize(context, uri))
+                                    put(
+                                        "photoId",
+                                        when {
+                                            mapping?.photoId?.isNotBlank() == true ->
+                                                mapping?.photoId.orEmpty()
+
+                                            mapping?.favoriteUri == uriText ->
+                                                ""
+
+                                            else ->
+                                                catalogPhoto?.id.orEmpty()
+                                        }
+                                    )
+                                    put(
+                                        "relativePath",
+                                        mapping?.originalRelativePath
+                                            ?.takeIf { it.isNotBlank() }
+                                            ?: getOriginalRelativePath(uri)
+                                    )
+                                    put(
+                                        "displayName",
+                                        mapping?.originalFileName
+                                            ?.takeIf { it.isNotBlank() }
+                                            ?: details.displayName
+                                    )
+                                    put(
+                                        "sizeBytes",
+                                        if (mapping?.favoriteUri == uriText) {
+                                            -1L
+                                        } else {
+                                            querySize(context, uri)
+                                        }
+                                    )
+                                    put("originalSha256", mapping?.originalSha256.orEmpty())
+                                    put("favoriteId", mapping?.favoriteId.orEmpty())
                                     put("favoriteArchiveFile", favoriteArchive)
                                 })
                             }
@@ -295,33 +374,36 @@ private fun readMediaDetails(
 
     var displayName = fallbackName
 
-    context.contentResolver.query(
-        uri,
-        arrayOf(
-            OpenableColumns.DISPLAY_NAME
-        ),
-        null,
-        null,
-        null
-    )?.use { cursor ->
+    runCatching {
+        context.contentResolver.query(
+            uri,
+            arrayOf(
+                OpenableColumns.DISPLAY_NAME
+            ),
+            null,
+            null,
+            null
+        )?.use { cursor ->
 
-        val nameColumn = cursor.getColumnIndex(
-            OpenableColumns.DISPLAY_NAME
-        )
+            val nameColumn = cursor.getColumnIndex(
+                OpenableColumns.DISPLAY_NAME
+            )
 
-        if (
-            cursor.moveToFirst() &&
-            nameColumn >= 0
-        ) {
-            displayName = cursor
-                .getString(nameColumn)
-                ?.takeIf { it.isNotBlank() }
-                ?: fallbackName
+            if (
+                cursor.moveToFirst() &&
+                nameColumn >= 0
+            ) {
+                displayName = cursor
+                    .getString(nameColumn)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: fallbackName
+            }
         }
     }
 
-    val mimeType = context.contentResolver
-        .getType(uri)
+    val mimeType = runCatching {
+        context.contentResolver.getType(uri)
+    }.getOrNull()
         ?: mimeTypeFromFileName(displayName)
 
     return FavoriteMediaDetails(

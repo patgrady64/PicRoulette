@@ -82,7 +82,7 @@ private fun identity(
     )
 }
 
-private fun ensurePhoto(
+internal fun ensureCatalogPhoto(
     context: Context,
     uri: Uri
 ): CatalogPhotoEntity {
@@ -168,7 +168,7 @@ fun syncPhotoCatalog(
             knownUris.add(uri.toString())
         }
         .forEach { uri ->
-            ensurePhoto(context, uri)
+            ensureCatalogPhoto(context, uri)
         }
 }
 
@@ -306,7 +306,7 @@ fun resolveAlbumPhotos(
 
             current != null && canOpen(current) -> {
                 val currentEntity =
-                    ensurePhoto(context, current)
+                    ensureCatalogPhoto(context, current)
 
                 if (currentEntity.id != stored.id) {
                     dao.addToAlbum(
@@ -392,19 +392,150 @@ fun loadAlbums(
         }
 }
 
+/**
+ * Converts any temporary album membership stored against a favorite copy back
+ * to the durable original photoId once that source link is known. This is most
+ * useful after importing a backup while the original library was unavailable,
+ * then running Fix favorites mapping later.
+ */
+fun relinkFavoriteAlbumMembershipsToOriginals(
+    context: Context,
+    mappings: List<FavoriteMapping>
+): Int {
+    val database = PicRouletteDatabase.get(context)
+    val dao = database.albumDao()
+    var movedMemberships = 0
+
+    mappings.forEach { mapping ->
+        if (
+            mapping.isDeleted ||
+            mapping.photoId.isBlank() ||
+            mapping.favoriteUri.isBlank()
+        ) {
+            return@forEach
+        }
+
+        val originalPhoto = dao.photoById(mapping.photoId) ?: return@forEach
+
+        /*
+         * Keep the favorite-copy fallback in the album while the original is
+         * genuinely unavailable. Fix favorites mapping will call this again
+         * after it reconnects the original to a readable URI.
+         */
+        val originalIsReadable = runCatching {
+            context.contentResolver
+                .openInputStream(Uri.parse(originalPhoto.currentUri))
+                ?.use { true } == true
+        }.getOrDefault(false)
+
+        if (!originalIsReadable) {
+            return@forEach
+        }
+
+        val favoritePhoto = dao.photoByCurrentUri(mapping.favoriteUri)
+            ?: runCatching {
+                ensureCatalogPhoto(context, Uri.parse(mapping.favoriteUri))
+            }.getOrNull()
+            ?: return@forEach
+
+        if (favoritePhoto.id == originalPhoto.id) {
+            return@forEach
+        }
+
+        database.runInTransaction {
+            dao.albumIdsForPhoto(favoritePhoto.id).forEach { albumId ->
+                if (dao.membershipCount(albumId, originalPhoto.id) == 0) {
+                    dao.addToAlbum(
+                        AlbumPhotoCrossRef(
+                            albumId = albumId,
+                            photoId = originalPhoto.id
+                        )
+                    )
+                }
+
+                dao.removeFromAlbum(
+                    albumId = albumId,
+                    photoId = favoritePhoto.id
+                )
+                movedMemberships++
+            }
+        }
+    }
+
+    return movedMemberships
+}
+
+/**
+ * Moves album memberships from an obsolete catalog row to the row that now
+ * represents the same original photo. This keeps albums intact when SHA/path
+ * recovery discovers that Android assigned the original a new catalog identity.
+ */
+internal fun moveAlbumMembershipsToPhoto(
+    context: Context,
+    fromPhotoId: String,
+    toPhotoId: String
+): Int {
+    if (
+        fromPhotoId.isBlank() ||
+        toPhotoId.isBlank() ||
+        fromPhotoId == toPhotoId
+    ) {
+        return 0
+    }
+
+    val database = PicRouletteDatabase.get(context)
+    val dao = database.albumDao()
+    if (dao.photoById(toPhotoId) == null) return 0
+
+    var movedMemberships = 0
+
+    database.runInTransaction {
+        dao.albumIdsForPhoto(fromPhotoId).forEach { albumId ->
+            if (dao.membershipCount(albumId, toPhotoId) == 0) {
+                dao.addToAlbum(
+                    AlbumPhotoCrossRef(
+                        albumId = albumId,
+                        photoId = toPhotoId
+                    )
+                )
+            }
+
+            dao.removeFromAlbum(
+                albumId = albumId,
+                photoId = fromPhotoId
+            )
+            movedMemberships++
+        }
+    }
+
+    return movedMemberships
+}
+
 /** Treat an original and its saved favorite/crop as one logical album photo. */
 fun canonicalAlbumPhotoUri(context: Context, uri: Uri): Uri {
     val raw = uri.toString()
-    val mapping = getFavoriteMappings(context).firstOrNull {
-        !it.isDeleted && (it.originalUri == raw || it.favoriteUri == raw)
+    val mapping = findActiveFavoriteMapping(
+        mappings = getFavoriteMappings(context),
+        photoUri = raw
+    ) { savedOriginalUri, currentPhotoUri ->
+        sameImage(
+            Uri.parse(savedOriginalUri),
+            Uri.parse(currentPhotoUri)
+        )
     }
     return mapping?.originalUri?.takeIf { it.isNotBlank() }?.let(Uri::parse) ?: uri
 }
 
 fun linkedAlbumPhotoUris(context: Context, uri: Uri): Set<String> {
     val raw = uri.toString()
-    val mapping = getFavoriteMappings(context).firstOrNull {
-        !it.isDeleted && (it.originalUri == raw || it.favoriteUri == raw)
+    val mapping = findActiveFavoriteMapping(
+        mappings = getFavoriteMappings(context),
+        photoUri = raw
+    ) { savedOriginalUri, currentPhotoUri ->
+        sameImage(
+            Uri.parse(savedOriginalUri),
+            Uri.parse(currentPhotoUri)
+        )
     }
     return if (mapping == null) setOf(raw) else setOf(mapping.originalUri, mapping.favoriteUri).filter { it.isNotBlank() }.toSet()
 }
@@ -433,7 +564,7 @@ fun createAlbum(
     )
 
     if (initialPhoto != null) {
-        val photo = ensurePhoto(context, canonicalAlbumPhotoUri(context, initialPhoto))
+        val photo = ensureCatalogPhoto(context, canonicalAlbumPhotoUri(context, initialPhoto))
 
         dao.addToAlbum(
             AlbumPhotoCrossRef(
@@ -455,7 +586,7 @@ fun setPhotoInAlbum(
 ): List<PhotoAlbum> {
     val dao = PicRouletteDatabase.get(context).albumDao()
     val canonical = canonicalAlbumPhotoUri(context, photo)
-    val catalogPhoto = ensurePhoto(context, canonical)
+    val catalogPhoto = ensureCatalogPhoto(context, canonical)
 
     if (included) {
         dao.addToAlbum(
@@ -468,7 +599,7 @@ fun setPhotoInAlbum(
         // Remove the canonical membership and any legacy membership that may
         // have been stored against the favorite/cropped copy itself.
         linkedAlbumPhotoUris(context, photo).forEach { raw ->
-            val entity = ensurePhoto(context, Uri.parse(raw))
+            val entity = ensureCatalogPhoto(context, Uri.parse(raw))
             dao.removeFromAlbum(albumId = albumId, photoId = entity.id)
         }
     }

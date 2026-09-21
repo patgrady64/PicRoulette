@@ -37,6 +37,7 @@ suspend fun saveToFavoritesFolder(
     context: Context,
     sourceUri: Uri,
     fileName: String,
+    favoriteId: String,
     scale: Float,
     offset: Offset,
     containerSize: IntSize,
@@ -80,7 +81,10 @@ suspend fun saveToFavoritesFolder(
             Locale.US
         ).format(Date())
 
-        val finalName = "${originalStem}_$timestamp.jpg"
+        val finalName = favoriteFileNameWithId(
+            favoriteId = favoriteId,
+            existingFileName = "${originalStem}_$timestamp.jpg"
+        )
 
         val destination = createFavoriteDestination(context, finalName)
             ?: return@withContext null

@@ -2,20 +2,25 @@ package com.patgrady64.picroulette.utils
 
 import android.content.Context
 import android.net.Uri
-import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import com.patgrady64.picroulette.AlbumEntity
 import com.patgrady64.picroulette.AlbumPhotoCrossRef
-import com.patgrady64.picroulette.CatalogPhotoEntity
 import com.patgrady64.picroulette.FavoriteFile
 import com.patgrady64.picroulette.FavoriteLinkReview
 import com.patgrady64.picroulette.FavoriteMapping
 import com.patgrady64.picroulette.FavoriteSourceCandidate
 import com.patgrady64.picroulette.PicRouletteDatabase
-import com.patgrady64.picroulette.albumStableKey
 import com.patgrady64.picroulette.createFavoriteDestination
+import com.patgrady64.picroulette.ensureCatalogPhoto
+import com.patgrady64.picroulette.ensureFavoriteFileIdentity
+import com.patgrady64.picroulette.favoriteFileNameWithId
+import com.patgrady64.picroulette.favoriteIdFromFileName
+import com.patgrady64.picroulette.findFavoriteMappingForFile
 import com.patgrady64.picroulette.getOriginalRelativePath
+import com.patgrady64.picroulette.moveAlbumMembershipsToPhoto
+import com.patgrady64.picroulette.newFavoriteId
 import com.patgrady64.picroulette.publishFavoriteDestination
+import com.patgrady64.picroulette.relinkFavoriteAlbumMembershipsToOriginals
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
@@ -26,7 +31,7 @@ import java.util.zip.ZipInputStream
  * Summary of a Favorites ZIP import.
  *
  * updatedMappings contains both the mappings that existed before the import and
- * any source-photo links restored from a version-2 backup manifest.
+ * any durable identities/source-photo links restored from the backup manifest.
  */
 data class FavoritesZipImportResult(
     val importedCount: Int,
@@ -73,6 +78,9 @@ private data class BackupManifestFile(
     val mimeType: String,
     val originalUri: String,
     val originalFileName: String,
+    val photoId: String,
+    val favoriteId: String,
+    val favoriteFileName: String,
     val originalRelativePath: String,
     val originalSha256: String,
     val hasSourceLink: Boolean,
@@ -86,8 +94,23 @@ private data class BackupManifest(
     val albums: List<BackupAlbum>
 )
 
-private data class BackupAlbum(val id: String, val name: String, val createdAt: Long, val photos: List<BackupAlbumPhoto>)
-private data class BackupAlbumPhoto(val uri: String, val relativePath: String, val displayName: String, val sizeBytes: Long, val favoriteArchiveFile: String)
+private data class BackupAlbum(
+    val id: String,
+    val name: String,
+    val createdAt: Long,
+    val photos: List<BackupAlbumPhoto>
+)
+
+private data class BackupAlbumPhoto(
+    val uri: String,
+    val photoId: String,
+    val relativePath: String,
+    val displayName: String,
+    val sizeBytes: Long,
+    val originalSha256: String,
+    val favoriteId: String,
+    val favoriteArchiveFile: String
+)
 
 private data class CopiedZipEntry(
     val byteCount: Long,
@@ -96,7 +119,8 @@ private data class CopiedZipEntry(
 
 private data class RestoredArchiveFavorite(
     val manifestFile: BackupManifestFile,
-    val favoriteFile: FavoriteFile
+    val favoriteFile: FavoriteFile,
+    val favoriteId: String
 )
 
 private const val MAX_MANIFEST_BYTES =
@@ -112,7 +136,7 @@ private const val MAX_ZIP_ENTRIES =
     100_000
 
 /**
- * Imports a PicRoulette Favorites ZIP and restores version-2 source links.
+ * Imports a PicRoulette Favorites ZIP and restores durable favorite/source links.
  *
  * Safety rules:
  * - Existing favorite files are never deleted or overwritten.
@@ -173,6 +197,23 @@ fun importFavoritesZip(
      */
     val existingFavoritesByHash =
         mutableMapOf<String, MutableList<FavoriteFile>>()
+
+    val existingFavoritesById = existingFavorites
+        .mapNotNull { favorite ->
+            val embeddedId = favoriteIdFromFileName(favorite.fileNameOnDisk)
+            val mappedId = findFavoriteMappingForFile(
+                mappings = existingMappings,
+                favoriteFile = favorite
+            )?.favoriteId.orEmpty()
+            embeddedId.ifBlank { mappedId }
+                .takeIf { it.isNotBlank() }
+                ?.let { it.lowercase(Locale.US) to favorite }
+        }
+        .groupBy({ it.first }, { it.second })
+        .mapNotNull { (id, files) ->
+            files.singleOrNull()?.let { id to it }
+        }
+        .toMap()
 
     reportProgress(
         phase =
@@ -326,24 +367,89 @@ fun importFavoritesZip(
                         )
                     }
 
-                    val existingFavorite =
+                    val backupFavoriteId = manifestFile
+                        ?.favoriteId
+                        ?.takeIf { it.isNotBlank() }
+                        ?: manifestFile
+                            ?.originalFavoriteName
+                            ?.let(::favoriteIdFromFileName)
+                            ?.takeIf { it.isNotBlank() }
+                        ?: manifestFile
+                            ?.favoriteFileName
+                            ?.let(::favoriteIdFromFileName)
+                            .orEmpty()
+
+                    /*
+                     * Version-4 backups use favoriteId as the authoritative
+                     * duplicate key. Hash matching remains only for older
+                     * backups that did not have durable identities; otherwise
+                     * two intentionally separate but byte-identical favorites
+                     * could be incorrectly merged.
+                     */
+                    val existingFavoriteById = backupFavoriteId
+                        .takeIf { it.isNotBlank() }
+                        ?.let { existingFavoritesById[it.lowercase(Locale.US)] }
+                        ?.takeIf { favorite ->
+                            favorite.mediaUri.toString() !in usedExistingFavoriteUris
+                        }
+
+                    val existingFavoriteByHash = if (backupFavoriteId.isBlank()) {
                         existingFavoritesByHash[copiedEntry.sha256]
                             ?.firstOrNull { favorite ->
-                                favorite.mediaUri.toString() !in
-                                        usedExistingFavoriteUris
+                                favorite.mediaUri.toString() !in usedExistingFavoriteUris
                             }
+                    } else {
+                        null
+                    }
 
-                    val restoredFavoriteFile =
+                    val existingFavorite =
+                        existingFavoriteById ?: existingFavoriteByHash
+
+                    val restoredPair: Pair<FavoriteFile, String>? =
                         if (existingFavorite != null) {
                             usedExistingFavoriteUris.add(
                                 existingFavorite.mediaUri.toString()
                             )
 
+                            val existingMappingId =
+                                findFavoriteMappingForFile(
+                                    mappings = existingMappings,
+                                    favoriteFile = existingFavorite
+                                )?.favoriteId.orEmpty()
+
+                            val durableFavoriteId = backupFavoriteId
+                                .ifBlank { favoriteIdFromFileName(existingFavorite.fileNameOnDisk) }
+                                .ifBlank { existingMappingId }
+                                .ifBlank { newFavoriteId() }
+
+                            val identified = ensureFavoriteFileIdentity(
+                                context = context,
+                                favoriteUri = existingFavorite.mediaUri,
+                                favoriteId = durableFavoriteId,
+                                knownFileName = existingFavorite.fileNameOnDisk
+                            )
+
+                            usedFileNames.add(
+                                identified.second.lowercase(Locale.US)
+                            )
                             skippedDuplicateCount++
-                            existingFavorite
+
+                            FavoriteFile(
+                                fileNameOnDisk = identified.second,
+                                mediaUri = identified.first
+                            ) to durableFavoriteId
                         } else {
+                            val durableFavoriteId = backupFavoriteId
+                                .ifBlank { newFavoriteId() }
+                            val durableRequestedName = favoriteFileNameWithId(
+                                favoriteId = durableFavoriteId,
+                                existingFileName = manifestFile
+                                    ?.favoriteFileName
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?: desiredFileName
+                            )
                             val safeFileName = makeUniqueFileName(
-                                requestedName = desiredFileName,
+                                requestedName = durableRequestedName,
                                 mimeType = mimeType,
                                 usedNames = usedFileNames
                             )
@@ -369,18 +475,16 @@ fun importFavoritesZip(
                                 FavoriteFile(
                                     fileNameOnDisk = safeFileName,
                                     mediaUri = importedUri
-                                )
+                                ) to durableFavoriteId
                             }
                         }
 
-                    if (
-                        restoredFavoriteFile != null &&
-                        manifestFile != null
-                    ) {
+                    if (restoredPair != null && manifestFile != null) {
                         restoredArchiveFavorites.add(
                             RestoredArchiveFavorite(
                                 manifestFile = manifestFile,
-                                favoriteFile = restoredFavoriteFile
+                                favoriteFile = restoredPair.first,
+                                favoriteId = restoredPair.second
                             )
                         )
                     }
@@ -431,7 +535,16 @@ fun importFavoritesZip(
     )
 
     val albumResult = restoreAlbums(
-        context, manifest.albums, sourceImages, restoredArchiveFavorites
+        context = context,
+        albums = manifest.albums,
+        sourceImages = sourceImages,
+        restoredFavorites = restoredArchiveFavorites,
+        restoredMappings = linkResult.updatedMappings
+    )
+
+    relinkFavoriteAlbumMembershipsToOriginals(
+        context = context,
+        mappings = linkResult.updatedMappings
     )
 
     reportProgress(
@@ -484,6 +597,7 @@ private fun restoreSourceLinks(
 ): SourceLinkRestoreResult {
 
     val updatedMappings = existingMappings.toMutableList()
+    val dao = PicRouletteDatabase.get(context).albumDao()
 
     val distinctSourceImages = sourceImages
         .distinctBy { it.toString() }
@@ -541,6 +655,23 @@ private fun restoreSourceLinks(
     var unresolvedLinkCount = 0
     var missingSourceMetadataCount = 0
 
+    fun mappingIndexFor(
+        favoriteId: String,
+        favoriteUri: String
+    ): Int = updatedMappings.indexOfFirst { mapping ->
+        (favoriteId.isNotBlank() &&
+            mapping.favoriteId.equals(favoriteId, ignoreCase = true)) ||
+            mapping.favoriteUri == favoriteUri
+    }
+
+    fun putMapping(index: Int, mapping: FavoriteMapping) {
+        if (index >= 0) {
+            updatedMappings[index] = mapping
+        } else {
+            updatedMappings.add(mapping)
+        }
+    }
+
     val totalLinks = restoredArchiveFavorites.size
 
     restoredArchiveFavorites.forEachIndexed restoredLoop@ {
@@ -550,10 +681,12 @@ private fun restoreSourceLinks(
         val manifestFile = restored.manifestFile
         val favoriteFile = restored.favoriteFile
         val favoriteUriString = favoriteFile.mediaUri.toString()
+        val durableFavoriteId = restored.favoriteId
+        val currentFavoriteName = favoriteFile.fileNameOnDisk
 
         val currentFileName =
             manifestFile.originalFavoriteName
-                .ifBlank { favoriteFile.fileNameOnDisk }
+                .ifBlank { currentFavoriteName }
 
         reportProgress(
             FavoritesZipImportPhase.RESTORING_LINKS,
@@ -562,53 +695,101 @@ private fun restoreSourceLinks(
             currentFileName
         )
 
-        if (
-            updatedMappings.any {
-                it.favoriteUri == favoriteUriString
-            }
-        ) {
-            existingLinkCount++
+        val mappingIndex = mappingIndexFor(
+            favoriteId = durableFavoriteId,
+            favoriteUri = favoriteUriString
+        )
+        val existing = updatedMappings.getOrNull(mappingIndex)
 
+        val existingPhotoId = existing?.photoId.orEmpty()
+        val validExistingPhotoId = existingPhotoId.takeIf { id ->
+            id.isNotBlank() && dao.photoById(id) != null
+        }.orEmpty().ifBlank {
+            manifestFile.photoId.takeIf { id ->
+                id.isNotBlank() && dao.photoById(id) != null
+            }.orEmpty()
+        }
+
+        val baseMapping = existing?.copy(
+            favoriteUri = favoriteUriString,
+            favoriteId = existing.favoriteId.ifBlank { durableFavoriteId },
+            favoriteFileName = currentFavoriteName,
+            originalFileName = existing.originalFileName.ifBlank {
+                manifestFile.originalFileName
+            },
+            originalRelativePath = existing.originalRelativePath.ifBlank {
+                manifestFile.originalRelativePath
+            },
+            originalSha256 = existing.originalSha256.ifBlank {
+                manifestFile.originalSha256
+            },
+            photoId = validExistingPhotoId
+        )
+
+        if (baseMapping != null && baseMapping != existing) {
+            putMapping(mappingIndex, baseMapping)
+        }
+
+        if (baseMapping?.isDeleted == true || manifestFile.originalDeleted) {
+            val deletedMapping = (baseMapping ?: FavoriteMapping(
+                originalUri = "",
+                favoriteUri = favoriteUriString,
+                originalFileName = manifestFile.originalFileName,
+                favoriteId = durableFavoriteId,
+                favoriteFileName = currentFavoriteName,
+                originalRelativePath = manifestFile.originalRelativePath,
+                originalSha256 = manifestFile.originalSha256,
+                dateAdded = System.currentTimeMillis(),
+                isDeleted = true
+            )).copy(
+                favoriteUri = favoriteUriString,
+                favoriteId = baseMapping?.favoriteId
+                    ?.ifBlank { durableFavoriteId }
+                    ?: durableFavoriteId,
+                favoriteFileName = currentFavoriteName,
+                isDeleted = true
+            )
+
+            putMapping(mappingIndex, deletedMapping)
             reportProgress(
                 FavoritesZipImportPhase.RESTORING_LINKS,
                 restoredIndex + 1,
                 totalLinks,
                 currentFileName
             )
-
             return@restoredLoop
         }
 
-        if (manifestFile.originalDeleted) {
-            updatedMappings.add(
-                FavoriteMapping(
-                    originalUri = "",
-                    favoriteUri = favoriteUriString,
-                    originalFileName = manifestFile.originalFileName,
-                    originalRelativePath = manifestFile.originalRelativePath,
-                    originalSha256 = manifestFile.originalSha256,
-                    dateAdded = System.currentTimeMillis(),
-                    isDeleted = true
-                )
-            )
-
-            reportProgress(
-                FavoritesZipImportPhase.RESTORING_LINKS,
-                restoredIndex + 1,
-                totalLinks,
-                currentFileName
-            )
-
-            return@restoredLoop
-        }
+        val effectiveOriginalUri = baseMapping?.originalUri
+            ?.takeIf { it.isNotBlank() }
+            ?: manifestFile.originalUri
+        val effectiveOriginalFileName = baseMapping?.originalFileName
+            ?.takeIf { it.isNotBlank() }
+            ?: manifestFile.originalFileName
+        val effectiveRelativePath = baseMapping?.originalRelativePath
+            ?.takeIf { it.isNotBlank() }
+            ?: manifestFile.originalRelativePath
+        val effectiveSha256 = baseMapping?.originalSha256
+            ?.takeIf { it.isNotBlank() }
+            ?: manifestFile.originalSha256
 
         val hasPortableSourceData =
             manifestFile.hasSourceLink ||
-                    manifestFile.originalUri.isNotBlank() ||
-                    manifestFile.originalRelativePath.isNotBlank() ||
-                    manifestFile.originalSha256.isNotBlank()
+                effectiveOriginalUri.isNotBlank() ||
+                effectiveRelativePath.isNotBlank() ||
+                effectiveSha256.isNotBlank() ||
+                validExistingPhotoId.isNotBlank()
 
         if (!hasPortableSourceData) {
+            val identityOnlyMapping = baseMapping ?: FavoriteMapping(
+                originalUri = "",
+                favoriteUri = favoriteUriString,
+                originalFileName = effectiveOriginalFileName,
+                favoriteId = durableFavoriteId,
+                favoriteFileName = currentFavoriteName,
+                dateAdded = System.currentTimeMillis()
+            )
+            putMapping(mappingIndex, identityOnlyMapping)
             missingSourceMetadataCount++
 
             reportProgress(
@@ -617,31 +798,88 @@ private fun restoreSourceLinks(
                 totalLinks,
                 currentFileName
             )
-
             return@restoredLoop
         }
 
+        /*
+         * If the existing durable catalog ID still resolves, the source link is
+         * already restored. Refresh the URI and keep the local ID rather than
+         * replacing it with the UUID from another device/installation.
+         */
+        if (validExistingPhotoId.isNotBlank()) {
+            val catalogPhoto = dao.photoById(validExistingPhotoId)
+            val currentOriginalUri = catalogPhoto?.currentUri.orEmpty()
+            val currentOriginalIsReadable = currentOriginalUri
+                .takeIf { it.isNotBlank() }
+                ?.let { storedUri ->
+                    runCatching {
+                        context.contentResolver
+                            .openInputStream(Uri.parse(storedUri))
+                            ?.use { true } == true
+                    }.getOrDefault(false)
+                } == true
+
+            if (currentOriginalIsReadable) {
+                val complete = (baseMapping ?: FavoriteMapping(
+                    originalUri = currentOriginalUri,
+                    favoriteUri = favoriteUriString,
+                    originalFileName = effectiveOriginalFileName,
+                    photoId = validExistingPhotoId,
+                    favoriteId = durableFavoriteId,
+                    favoriteFileName = currentFavoriteName,
+                    originalRelativePath = effectiveRelativePath,
+                    originalSha256 = effectiveSha256,
+                    dateAdded = System.currentTimeMillis()
+                )).copy(
+                    originalUri = currentOriginalUri,
+                    photoId = validExistingPhotoId,
+                    favoriteUri = favoriteUriString,
+                    favoriteId = baseMapping?.favoriteId
+                        ?.ifBlank { durableFavoriteId }
+                        ?: durableFavoriteId,
+                    favoriteFileName = currentFavoriteName
+                )
+                putMapping(mappingIndex, complete)
+                existingLinkCount++
+
+                reportProgress(
+                    FavoritesZipImportPhase.RESTORING_LINKS,
+                    restoredIndex + 1,
+                    totalLinks,
+                    currentFileName
+                )
+                return@restoredLoop
+            }
+        }
+
         val usedOriginalUris = updatedMappings
+            .filterIndexed { index, _ -> index != mappingIndex }
             .map { it.originalUri }
             .filter { it.isNotBlank() }
             .toSet()
 
         val exactUriCandidate =
-            manifestFile.originalUri
+            effectiveOriginalUri
                 .takeIf { it.isNotBlank() }
                 ?.let { originalUriString ->
                     sourceByUri[originalUriString]
                         ?: readableCandidateFromStoredUri(
                             context = context,
                             storedUriString = originalUriString,
-                            fallbackRelativePath =
-                                manifestFile.originalRelativePath,
-                            fallbackFileName =
-                                manifestFile.originalFileName
+                            fallbackRelativePath = effectiveRelativePath,
+                            fallbackFileName = effectiveOriginalFileName
                         )
                 }
                 ?.takeUnless {
                     it.sourceUri.toString() in usedOriginalUris
+                }
+                ?.takeIf { candidate ->
+                    effectiveSha256.isBlank() ||
+                        sha256ForCandidate(
+                            context = context,
+                            candidate = candidate,
+                            cache = sourceHashCache
+                        ).equals(effectiveSha256, ignoreCase = true)
                 }
 
         val resolvedCandidates = when {
@@ -649,12 +887,10 @@ private fun restoreSourceLinks(
                 listOf(exactUriCandidate)
             }
 
-            manifestFile.originalRelativePath.isNotBlank() -> {
+            effectiveRelativePath.isNotBlank() -> {
                 val pathMatches =
                     sourceByRelativePath[
-                        normalizeRelativePath(
-                            manifestFile.originalRelativePath
-                        )
+                        normalizeRelativePath(effectiveRelativePath)
                     ]
                         .orEmpty()
                         .filterNot {
@@ -662,9 +898,10 @@ private fun restoreSourceLinks(
                         }
 
                 when {
-                    pathMatches.size <= 1 -> pathMatches
+                    pathMatches.size <= 1 && effectiveSha256.isBlank() ->
+                        pathMatches
 
-                    manifestFile.originalSha256.isNotBlank() -> {
+                    effectiveSha256.isNotBlank() -> {
                         pathMatches.filterIndexed {
                                 candidateIndex,
                                 candidate ->
@@ -675,8 +912,7 @@ private fun restoreSourceLinks(
                                 candidateIndex == pathMatches.lastIndex
                             ) {
                                 reportProgress(
-                                    FavoritesZipImportPhase
-                                        .COMPARING_SOURCE_PHOTOS,
+                                    FavoritesZipImportPhase.COMPARING_SOURCE_PHOTOS,
                                     candidateIndex + 1,
                                     pathMatches.size,
                                     currentFileName
@@ -687,7 +923,7 @@ private fun restoreSourceLinks(
                                 context = context,
                                 candidate = candidate,
                                 cache = sourceHashCache
-                            ) == manifestFile.originalSha256
+                            ).equals(effectiveSha256, ignoreCase = true)
                         }
                     }
 
@@ -700,7 +936,7 @@ private fun restoreSourceLinks(
 
         if (
             resolvedCandidates.isEmpty() &&
-            manifestFile.originalSha256.isNotBlank()
+            effectiveSha256.isNotBlank()
         ) {
             sourceCandidates.forEachIndexed {
                     candidateIndex,
@@ -712,8 +948,7 @@ private fun restoreSourceLinks(
                     candidateIndex == sourceCandidates.lastIndex
                 ) {
                     reportProgress(
-                        FavoritesZipImportPhase
-                            .COMPARING_SOURCE_PHOTOS,
+                        FavoritesZipImportPhase.COMPARING_SOURCE_PHOTOS,
                         candidateIndex + 1,
                         sourceCandidates.size,
                         currentFileName
@@ -726,7 +961,7 @@ private fun restoreSourceLinks(
                         context = context,
                         candidate = candidate,
                         cache = sourceHashCache
-                    ) == manifestFile.originalSha256
+                    ).equals(effectiveSha256, ignoreCase = true)
                 ) {
                     resolvedCandidates.add(candidate)
                 }
@@ -738,33 +973,108 @@ private fun restoreSourceLinks(
 
         when (distinctCandidates.size) {
             0 -> {
+                /*
+                 * Preserve the portable source metadata even when the original
+                 * is not currently mounted. Fix favorites mapping can use it
+                 * later instead of starting from filename guessing again.
+                 */
+                val unresolved = (baseMapping ?: FavoriteMapping(
+                    originalUri = effectiveOriginalUri,
+                    favoriteUri = favoriteUriString,
+                    originalFileName = effectiveOriginalFileName,
+                    favoriteId = durableFavoriteId,
+                    favoriteFileName = currentFavoriteName,
+                    originalRelativePath = effectiveRelativePath,
+                    originalSha256 = effectiveSha256,
+                    dateAdded = System.currentTimeMillis()
+                )).copy(
+                    originalUri = effectiveOriginalUri,
+                    photoId = validExistingPhotoId,
+                    favoriteUri = favoriteUriString,
+                    favoriteId = baseMapping?.favoriteId
+                        ?.ifBlank { durableFavoriteId }
+                        ?: durableFavoriteId,
+                    favoriteFileName = currentFavoriteName,
+                    originalFileName = effectiveOriginalFileName,
+                    originalRelativePath = effectiveRelativePath,
+                    originalSha256 = effectiveSha256,
+                    isDeleted = false
+                )
+                putMapping(mappingIndex, unresolved)
                 unresolvedLinkCount++
             }
 
             1 -> {
                 val candidate = distinctCandidates.first()
+                val catalogPhoto = ensureCatalogPhoto(context, candidate.sourceUri)
 
-                updatedMappings.add(
-                    FavoriteMapping(
-                        originalUri = candidate.sourceUri.toString(),
-                        favoriteUri = favoriteUriString,
-                        originalFileName =
-                            manifestFile.originalFileName
-                                .ifBlank { candidate.fileName },
-                        originalRelativePath =
-                            candidate.relativePath.ifBlank {
-                                manifestFile.originalRelativePath
-                            },
-                        originalSha256 =
-                            manifestFile.originalSha256,
-                        dateAdded = System.currentTimeMillis()
+                if (
+                    validExistingPhotoId.isNotBlank() &&
+                    validExistingPhotoId != catalogPhoto.id
+                ) {
+                    moveAlbumMembershipsToPhoto(
+                        context = context,
+                        fromPhotoId = validExistingPhotoId,
+                        toPhotoId = catalogPhoto.id
                     )
+                }
+
+                val restoredMapping = (baseMapping ?: FavoriteMapping(
+                    originalUri = candidate.sourceUri.toString(),
+                    favoriteUri = favoriteUriString,
+                    originalFileName = effectiveOriginalFileName
+                        .ifBlank { candidate.fileName },
+                    photoId = catalogPhoto.id,
+                    favoriteId = durableFavoriteId,
+                    favoriteFileName = currentFavoriteName,
+                    originalRelativePath = candidate.relativePath,
+                    originalSha256 = effectiveSha256,
+                    dateAdded = System.currentTimeMillis()
+                )).copy(
+                    originalUri = candidate.sourceUri.toString(),
+                    favoriteUri = favoriteUriString,
+                    originalFileName = effectiveOriginalFileName
+                        .ifBlank { candidate.fileName },
+                    photoId = catalogPhoto.id,
+                    favoriteId = baseMapping?.favoriteId
+                        ?.ifBlank { durableFavoriteId }
+                        ?: durableFavoriteId,
+                    favoriteFileName = currentFavoriteName,
+                    originalRelativePath = candidate.relativePath.ifBlank {
+                        effectiveRelativePath
+                    },
+                    originalSha256 = effectiveSha256,
+                    isDeleted = false
                 )
 
+                putMapping(mappingIndex, restoredMapping)
                 restoredLinkCount++
             }
 
             else -> {
+                val unresolved = (baseMapping ?: FavoriteMapping(
+                    originalUri = effectiveOriginalUri,
+                    favoriteUri = favoriteUriString,
+                    originalFileName = effectiveOriginalFileName,
+                    favoriteId = durableFavoriteId,
+                    favoriteFileName = currentFavoriteName,
+                    originalRelativePath = effectiveRelativePath,
+                    originalSha256 = effectiveSha256,
+                    dateAdded = System.currentTimeMillis()
+                )).copy(
+                    photoId = validExistingPhotoId,
+                    favoriteUri = favoriteUriString,
+                    favoriteId = baseMapping?.favoriteId
+                        ?.ifBlank { durableFavoriteId }
+                        ?: durableFavoriteId,
+                    favoriteFileName = currentFavoriteName,
+                    originalFileName = effectiveOriginalFileName,
+                    originalRelativePath = effectiveRelativePath,
+                    originalSha256 = effectiveSha256,
+                    isDeleted = false
+                )
+                putMapping(mappingIndex, unresolved)
+
                 reviews.add(
                     FavoriteLinkReview(
                         favoriteFile = favoriteFile,
@@ -968,6 +1278,21 @@ private fun readBackupManifest(
                             "originalFileName",
                             ""
                         ),
+                    photoId =
+                        fileObject.optString(
+                            "photoId",
+                            ""
+                        ),
+                    favoriteId =
+                        fileObject.optString(
+                            "favoriteId",
+                            ""
+                        ),
+                    favoriteFileName =
+                        fileObject.optString(
+                            "favoriteFileName",
+                            fileObject.optString("originalFavoriteName", "")
+                        ),
                     originalRelativePath =
                         fileObject.optString(
                             "originalRelativePath",
@@ -1016,45 +1341,352 @@ private fun parseBackupAlbums(json: JSONObject): List<BackupAlbum> {
         val photosArray = item.optJSONArray("photos")
         val photos = if (photosArray == null) emptyList() else (0 until photosArray.length()).mapNotNull photos@ { photoIndex ->
             val photo = photosArray.optJSONObject(photoIndex) ?: return@photos null
-            BackupAlbumPhoto(photo.optString("uri"), photo.optString("relativePath"), photo.optString("displayName"), photo.optLong("sizeBytes", -1L), photo.optString("favoriteArchiveFile"))
+            BackupAlbumPhoto(
+                uri = photo.optString("uri"),
+                photoId = photo.optString("photoId"),
+                relativePath = photo.optString("relativePath"),
+                displayName = photo.optString("displayName"),
+                sizeBytes = photo.optLong("sizeBytes", -1L),
+                originalSha256 = photo.optString("originalSha256"),
+                favoriteId = photo.optString("favoriteId"),
+                favoriteArchiveFile = photo.optString("favoriteArchiveFile")
+            )
         }
         BackupAlbum(id, name, item.optLong("createdAt", System.currentTimeMillis()), photos)
     }
 }
 
-private fun restoreAlbums(context: Context, albums: List<BackupAlbum>, sourceImages: List<Uri>, restoredFavorites: List<RestoredArchiveFavorite>): Triple<Int, Int, Int> {
+private fun restoreAlbums(
+    context: Context,
+    albums: List<BackupAlbum>,
+    sourceImages: List<Uri>,
+    restoredFavorites: List<RestoredArchiveFavorite>,
+    restoredMappings: MutableList<FavoriteMapping>
+): Triple<Int, Int, Int> {
     if (albums.isEmpty()) return Triple(0, 0, 0)
+
     val dao = PicRouletteDatabase.get(context).albumDao()
-    val favoritesByArchive = restoredFavorites.associateBy { it.manifestFile.archiveFile }
-    val candidates = sourceImages.distinctBy(Uri::toString)
-    val metadataCache = mutableMapOf<String, Pair<String, Long>>()
-    fun metadata(uri: Uri): Pair<String, Long> = metadataCache.getOrPut(uri.toString()) {
-        var name = uri.lastPathSegment.orEmpty(); var size = -1L
-        runCatching { context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
-            if (c.moveToFirst()) { if (!c.isNull(0)) name = c.getString(0); if (!c.isNull(1)) size = c.getLong(1) }
-        } }
-        name to size
+    val favoritesByArchive = restoredFavorites.associateBy {
+        it.manifestFile.archiveFile
     }
-    var memberships = 0; var unresolved = 0
+    val favoritesById = restoredFavorites
+        .filter { it.favoriteId.isNotBlank() }
+        .associateBy { it.favoriteId.lowercase(Locale.US) }
+    val favoritesByBackupPhotoId = restoredFavorites
+        .filter { it.manifestFile.photoId.isNotBlank() }
+        .groupBy { it.manifestFile.photoId }
+        .mapNotNull { (photoId, favorites) ->
+            favorites.singleOrNull()?.let { photoId to it }
+        }
+        .toMap()
+
+    val candidates = sourceImages.distinctBy(Uri::toString)
+    val candidatesByUri = candidates.associateBy(Uri::toString)
+    val candidatesByPath = candidates.groupBy { uri ->
+        normalizeRelativePath(getOriginalRelativePath(uri))
+    }
+    val metadataCache = mutableMapOf<String, Pair<String, Long>>()
+    val hashCache = mutableMapOf<String, String>()
+
+    fun metadata(uri: Uri): Pair<String, Long> =
+        metadataCache.getOrPut(uri.toString()) {
+            var name = uri.lastPathSegment.orEmpty()
+            var size = -1L
+            runCatching {
+                context.contentResolver.query(
+                    uri,
+                    arrayOf(
+                        OpenableColumns.DISPLAY_NAME,
+                        OpenableColumns.SIZE
+                    ),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (nameIndex >= 0 && !cursor.isNull(nameIndex)) {
+                            name = cursor.getString(nameIndex)
+                        }
+                        if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
+                            size = cursor.getLong(sizeIndex)
+                        }
+                    }
+                }
+            }
+            name to size
+        }
+
+    fun hash(uri: Uri): String = hashCache.getOrPut(uri.toString()) {
+        sha256ForUri(context, uri).orEmpty()
+    }
+
+    fun readable(uri: Uri): Boolean = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { true } == true
+    }.getOrDefault(false)
+
+    fun uniqueHashMatch(
+        sourceCandidates: List<Uri>,
+        expectedHash: String
+    ): Uri? {
+        if (expectedHash.isBlank()) return null
+        return sourceCandidates
+            .distinctBy(Uri::toString)
+            .filter { candidate ->
+                hash(candidate).equals(expectedHash, ignoreCase = true)
+            }
+            .singleOrNull()
+    }
+
+    fun mappingFor(saved: BackupAlbumPhoto): FavoriteMapping? {
+        if (saved.favoriteId.isNotBlank()) {
+            restoredMappings.firstOrNull { mapping ->
+                mapping.favoriteId.equals(saved.favoriteId, ignoreCase = true)
+            }?.let { return it }
+        }
+
+        if (saved.photoId.isNotBlank()) {
+            val restoredFavorite = favoritesByBackupPhotoId[saved.photoId]
+            val favoriteId = restoredFavorite?.favoriteId.orEmpty()
+            if (favoriteId.isNotBlank()) {
+                restoredMappings.firstOrNull { mapping ->
+                    mapping.favoriteId.equals(favoriteId, ignoreCase = true)
+                }?.let { return it }
+            }
+        }
+
+        return restoredMappings.firstOrNull { mapping ->
+            mapping.originalUri == saved.uri
+        }
+    }
+
+    fun updateMappingFromOriginal(
+        favoriteId: String,
+        originalUri: Uri,
+        photoId: String,
+        saved: BackupAlbumPhoto
+    ) {
+        if (favoriteId.isBlank()) return
+        val index = restoredMappings.indexOfFirst { mapping ->
+            mapping.favoriteId.equals(favoriteId, ignoreCase = true)
+        }
+        if (index < 0) return
+
+        val mapping = restoredMappings[index]
+
+        if (
+            mapping.photoId.isNotBlank() &&
+            mapping.photoId != photoId
+        ) {
+            moveAlbumMembershipsToPhoto(
+                context = context,
+                fromPhotoId = mapping.photoId,
+                toPhotoId = photoId
+            )
+        }
+
+        restoredMappings[index] = mapping.copy(
+            originalUri = originalUri.toString(),
+            photoId = photoId,
+            originalRelativePath = getOriginalRelativePath(originalUri),
+            originalSha256 = mapping.originalSha256.ifBlank {
+                saved.originalSha256
+            },
+            isDeleted = false
+        )
+    }
+
+    var memberships = 0
+    var unresolved = 0
+
     albums.forEach { album ->
-        dao.putAlbum(AlbumEntity(album.id, album.name, album.createdAt))
+        dao.putAlbum(
+            AlbumEntity(
+                id = album.id,
+                name = album.name,
+                createdAt = album.createdAt
+            )
+        )
+
         album.photos.forEach { saved ->
-            val favorite = saved.favoriteArchiveFile.takeIf { it.isNotBlank() }?.let(favoritesByArchive::get)?.favoriteFile?.mediaUri
-            val exact = candidates.firstOrNull { it.toString() == saved.uri }
-            val paths = if (exact == null && saved.relativePath.isNotBlank()) candidates.filter { getOriginalRelativePath(it).equals(saved.relativePath, true) } else emptyList()
-            val names = if (exact == null && paths.size != 1 && saved.displayName.isNotBlank()) candidates.filter { metadata(it).let { data -> data.first.equals(saved.displayName, true) && (saved.sizeBytes < 0 || data.second == saved.sizeBytes) } } else emptyList()
-            val uri = favorite ?: exact ?: paths.singleOrNull() ?: names.singleOrNull()
-            if (uri == null) unresolved++ else {
-                val documentId = runCatching { if (DocumentsContract.isDocumentUri(context, uri)) DocumentsContract.getDocumentId(uri) else null }.getOrNull()
-                val data = metadata(uri)
-                val stableKey = albumStableKey(uri.authority.orEmpty(), documentId, uri.scheme, uri.path, uri.normalizeScheme().toString())
-                val existing = dao.photoByStableKey(stableKey)
-                val photo = existing ?: CatalogPhotoEntity(java.util.UUID.randomUUID().toString(), stableKey, uri.toString(), data.first, data.second.takeIf { it >= 0 })
-                dao.putPhoto(photo.copy(currentUri = uri.toString()))
-                dao.addToAlbum(AlbumPhotoCrossRef(album.id, photo.id)); memberships++
+            val mapping = mappingFor(saved)
+
+            val mappedCatalogPhoto = mapping
+                ?.photoId
+                ?.takeIf { it.isNotBlank() }
+                ?.let(dao::photoById)
+
+            val mappedOriginalUriText = mapping?.originalUri.orEmpty()
+            val mappedOriginal = when {
+                mappedCatalogPhoto != null ->
+                    runCatching {
+                        Uri.parse(mappedCatalogPhoto.currentUri)
+                    }.getOrNull()?.takeIf(::readable)
+
+                mappedOriginalUriText.isNotBlank() ->
+                    candidatesByUri[mappedOriginalUriText]
+                        ?: runCatching { Uri.parse(mappedOriginalUriText) }
+                            .getOrNull()
+                            ?.takeIf(::readable)
+
+                else -> null
+            }
+
+            val exact = candidatesByUri[saved.uri]
+                ?.takeIf { candidate ->
+                    saved.originalSha256.isBlank() ||
+                        hash(candidate).equals(
+                            saved.originalSha256,
+                            ignoreCase = true
+                        )
+                }
+
+            val pathMatches = if (
+                exact == null &&
+                mappedOriginal == null &&
+                saved.relativePath.isNotBlank()
+            ) {
+                candidatesByPath[
+                    normalizeRelativePath(saved.relativePath)
+                ].orEmpty()
+            } else {
+                emptyList()
+            }
+
+            val pathResolved = when {
+                pathMatches.size == 1 && saved.originalSha256.isBlank() ->
+                    pathMatches.single()
+
+                pathMatches.isNotEmpty() && saved.originalSha256.isNotBlank() ->
+                    uniqueHashMatch(pathMatches, saved.originalSha256)
+
+                else -> null
+            }
+
+            val nameMatches = if (
+                mappedOriginal == null &&
+                exact == null &&
+                pathResolved == null &&
+                saved.displayName.isNotBlank()
+            ) {
+                candidates.filter { uri ->
+                    metadata(uri).let { data ->
+                        data.first.equals(saved.displayName, true) &&
+                            (saved.sizeBytes < 0 || data.second == saved.sizeBytes)
+                    }
+                }
+            } else {
+                emptyList()
+            }
+
+            val nameResolved = when {
+                nameMatches.size == 1 && saved.originalSha256.isBlank() ->
+                    nameMatches.single()
+
+                nameMatches.isNotEmpty() && saved.originalSha256.isNotBlank() ->
+                    uniqueHashMatch(nameMatches, saved.originalSha256)
+
+                else -> null
+            }
+
+            val hashResolved = if (
+                mappedOriginal == null &&
+                exact == null &&
+                pathResolved == null &&
+                nameResolved == null &&
+                saved.originalSha256.isNotBlank()
+            ) {
+                uniqueHashMatch(candidates, saved.originalSha256)
+            } else {
+                null
+            }
+
+            val sourceUri = mappedOriginal
+                ?: exact
+                ?: pathResolved
+                ?: nameResolved
+                ?: hashResolved
+
+            val sourceCatalogPhoto = sourceUri?.let { uri ->
+                runCatching { ensureCatalogPhoto(context, uri) }.getOrNull()
+            }
+
+            val restoredFavorite = when {
+                saved.favoriteId.isNotBlank() ->
+                    favoritesById[saved.favoriteId.lowercase(Locale.US)]
+
+                saved.favoriteArchiveFile.isNotBlank() ->
+                    favoritesByArchive[saved.favoriteArchiveFile]
+
+                saved.photoId.isNotBlank() ->
+                    favoritesByBackupPhotoId[saved.photoId]
+
+                else -> null
+            }
+
+            val albumCatalogPhoto = sourceCatalogPhoto ?: restoredFavorite
+                ?.favoriteFile
+                ?.mediaUri
+                ?.let { favoriteUri ->
+                    runCatching {
+                        ensureCatalogPhoto(context, favoriteUri)
+                    }.getOrNull()
+                }
+
+            if (albumCatalogPhoto == null) {
+                unresolved++
+            } else {
+                /*
+                 * If the source is temporarily unavailable, use the restored
+                 * favorite copy as the album's visible fallback instead of
+                 * leaving a second, broken membership on the stale source row.
+                 * The repair flow moves it back when the original is found.
+                 */
+                if (
+                    sourceCatalogPhoto == null &&
+                    mapping?.photoId?.isNotBlank() == true &&
+                    mapping.photoId != albumCatalogPhoto.id
+                ) {
+                    dao.removeFromAlbum(
+                        albumId = album.id,
+                        photoId = mapping.photoId
+                    )
+                }
+
+                if (
+                    dao.membershipCount(
+                        albumId = album.id,
+                        photoId = albumCatalogPhoto.id
+                    ) == 0
+                ) {
+                    dao.addToAlbum(
+                        AlbumPhotoCrossRef(
+                            albumId = album.id,
+                            photoId = albumCatalogPhoto.id
+                        )
+                    )
+                    memberships++
+                }
+
+                if (sourceCatalogPhoto != null) {
+                    val durableFavoriteId = mapping?.favoriteId
+                        ?.takeIf { it.isNotBlank() }
+                        ?: saved.favoriteId.ifBlank {
+                            restoredFavorite?.favoriteId.orEmpty()
+                        }
+
+                    updateMappingFromOriginal(
+                        favoriteId = durableFavoriteId,
+                        originalUri = sourceCatalogPhoto.currentUri.let(Uri::parse),
+                        photoId = sourceCatalogPhoto.id,
+                        saved = saved
+                    )
+                }
             }
         }
     }
+
     return Triple(albums.size, memberships, unresolved)
 }
 

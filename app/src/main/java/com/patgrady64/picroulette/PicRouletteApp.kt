@@ -117,7 +117,11 @@ import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun PicRouletteApp(themeColor: Color) {
+fun PicRouletteApp(
+    themeColor: Color,
+    externalImageRequest: ExternalImageRequest? = null,
+    onExternalImageRequestConsumed: () -> Unit = {}
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -194,6 +198,7 @@ fun PicRouletteApp(themeColor: Color) {
         mutableIntStateOf(0)
     }
     var isPlaying by remember { mutableStateOf(false) }
+    var isExternalSession by remember { mutableStateOf(false) }
     var isFavoritesMode by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     val isScanning = remember { mutableStateOf(false) }
@@ -237,6 +242,29 @@ fun PicRouletteApp(themeColor: Color) {
     val currentIndex = remember { mutableIntStateOf(0) }
     var uiVisible by remember { mutableStateOf(false) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
+
+    /*
+     * Images opened/shared from another Android app use PicRoulette's regular
+     * viewer without being folded into the user's saved roulette library.
+     */
+    LaunchedEffect(externalImageRequest?.requestId) {
+        val request = externalImageRequest ?: return@LaunchedEffect
+        val incomingUris = request.uris.distinct()
+
+        if (incomingUris.isNotEmpty()) {
+            activeSessionList.clear()
+            activeSessionSource.clear()
+            activeSessionSource.addAll(incomingUris)
+            activeSessionList.addAll(incomingUris)
+            currentIndex.intValue = 0
+            isFavoritesMode = false
+            isAlbumMode = false
+            isExternalSession = true
+            isPlaying = true
+        }
+
+        onExternalImageRequestConsumed()
+    }
 
     var showCountSetting by remember {
         mutableStateOf(showPhotoCounterByDefault)
@@ -391,7 +419,7 @@ fun PicRouletteApp(themeColor: Color) {
     }
 
     fun reconcileActiveViewerSession(availableUris: List<Uri>) {
-        if (!isPlaying || activeSessionList.isEmpty()) {
+        if (!isPlaying || isExternalSession || activeSessionList.isEmpty()) {
             return
         }
 
@@ -444,12 +472,20 @@ fun PicRouletteApp(themeColor: Color) {
                 }
 
                 /*
-                 * Do NOT automatically delete FavoriteMappings just because the URI returned
-                 * by MediaStore differs from the URI saved when the favorite was created.
-                 * Android can legitimately expose the same favorite through a new content URI
-                 * after rescans/provider changes. The mapping is our durable link back to the
-                 * original photo, so only explicit unfavorite/delete actions may remove it.
+                 * URI strings are locations, not identities. Repair any URI drift
+                 * from the durable favoriteId embedded in the PR_FAVS filename and
+                 * the photoId stored in the album catalog. Never delete a mapping
+                 * merely because a scan cannot currently find its file.
                  */
+                val durableRepair = reconcileDurableFavoriteMappings(
+                    context = context,
+                    mappings = favoriteMappings,
+                    favoriteFiles = diskFiles
+                )
+                if (durableRepair.changed) {
+                    favoriteMappings = durableRepair.mappings
+                    saveFavoriteMappings(context, favoriteMappings)
+                }
 
                 if (isPlaying && isFavoritesMode) {
                     reconcileActiveViewerSession(
@@ -461,6 +497,92 @@ fun PicRouletteApp(themeColor: Color) {
                 isFavoritesLoading = false
             }
         }
+    }
+
+    suspend fun commitPendingFavoriteRemoval(pendingUri: Uri): Boolean {
+        val pendingUriString = pendingUri.toString()
+        val mapping = favoriteMappings.find { candidate ->
+            !candidate.isDeleted &&
+                candidate.favoriteUri.isNotBlank() &&
+                (candidate.favoriteUri == pendingUriString ||
+                    runCatching {
+                        sameImage(
+                            Uri.parse(candidate.favoriteUri),
+                            pendingUri
+                        )
+                    }.getOrDefault(false))
+        }
+
+        if (mapping == null) {
+            pendingFavoriteReplacementUri = null
+            snackbarHostState.showSnackbar(
+                "This favorite could not be removed safely, so it was kept."
+            )
+            return false
+        }
+
+        val mappingsBeforeRemoval = favoriteMappings.toMutableList()
+        val updatedMappings = favoriteMappings
+            .filterNot { candidate ->
+                candidate == mapping ||
+                    (mapping.favoriteId.isNotBlank() &&
+                        candidate.favoriteId == mapping.favoriteId)
+            }
+            .toMutableList()
+
+        val mappingSaved = saveFavoriteMappings(
+            context = context,
+            mappings = updatedMappings,
+            synchronous = true
+        )
+
+        if (!mappingSaved) {
+            pendingFavoriteReplacementUri = null
+            snackbarHostState.showSnackbar(
+                "The favorite could not be removed, so it was kept."
+            )
+            return false
+        }
+
+        val deleted = withContext(Dispatchers.IO) {
+            deleteFavorite(
+                context,
+                Uri.parse(mapping.favoriteUri)
+            )
+        }
+
+        if (!deleted) {
+            saveFavoriteMappings(
+                context = context,
+                mappings = mappingsBeforeRemoval,
+                synchronous = true
+            )
+            pendingFavoriteReplacementUri = null
+            snackbarHostState.showSnackbar(
+                "The favorite could not be removed, so it was kept."
+            )
+            return false
+        }
+
+        favoriteMappings = updatedMappings
+        pendingFavoriteReplacementUri = null
+
+        val retiredIndex = activeSessionList.indexOfFirst { sessionUri ->
+            sessionUri == pendingUri ||
+                runCatching { sameImage(sessionUri, pendingUri) }.getOrDefault(false)
+        }
+        if (retiredIndex >= 0) {
+            activeSessionList.removeAt(retiredIndex)
+            if (retiredIndex < currentIndex.intValue) {
+                currentIndex.intValue =
+                    (currentIndex.intValue - 1).coerceAtLeast(0)
+            } else if (currentIndex.intValue >= activeSessionList.size) {
+                currentIndex.intValue = activeSessionList.lastIndex.coerceAtLeast(0)
+            }
+        }
+
+        refreshFavs(context) { favoriteFiles = it }
+        return true
     }
 
     val scanAllFolders: suspend () -> Unit = {
@@ -971,10 +1093,20 @@ fun PicRouletteApp(themeColor: Color) {
 
         scope.launch {
             try {
+                val durableRepair = withContext(Dispatchers.IO) {
+                    reconcileDurableFavoriteMappings(
+                        context = context,
+                        mappings = mappingsSnapshot,
+                        favoriteFiles = favoritesSnapshot
+                    )
+                }
+
+                favoriteMappings = durableRepair.mappings
+
                 val firstBackfill =
                     backfillFavoriteMappingMetadata(
                         context = context,
-                        mappings = mappingsSnapshot
+                        mappings = durableRepair.mappings
                     ) { completed, total ->
                         withContext(Dispatchers.Main) {
                             favoriteRepairStatus =
@@ -990,17 +1122,39 @@ fun PicRouletteApp(themeColor: Color) {
                         }
                     }
 
-                favoriteMappings = firstBackfill.updatedMappings
-                favoriteRepairStatus = "Finding Original Photos"
+                val favoritesAfterUpgrade = withContext(Dispatchers.IO) {
+                    readFavoritesList(context).getOrElse {
+                        favoritesSnapshot
+                    }
+                }
+
+                val postUpgradeReconcile = withContext(Dispatchers.IO) {
+                    reconcileDurableFavoriteMappings(
+                        context = context,
+                        mappings = firstBackfill.updatedMappings,
+                        favoriteFiles = favoritesAfterUpgrade
+                    )
+                }
+
+                favoriteMappings = postUpgradeReconcile.mappings
+                favoriteRepairStatus = "Verifying Original Photos"
                 favoriteRepairProgress = 0f
+
+                val shaRepair = repairFavoriteOriginalsBySha(
+                    context = context,
+                    mappings = postUpgradeReconcile.mappings,
+                    sourceImages = sourceImagesSnapshot
+                )
+
+                favoriteMappings = shaRepair.mappings
+                favoriteRepairStatus = "Finding Original Photos"
 
                 val migrationResult =
                     withContext(Dispatchers.Default) {
                         migrateExistingFavoriteLinks(
-                            favoriteFiles = favoritesSnapshot,
+                            favoriteFiles = favoritesAfterUpgrade,
                             sourceImages = sourceImagesSnapshot,
-                            existingMappings =
-                                firstBackfill.updatedMappings
+                            existingMappings = shaRepair.mappings
                         )
                     }
 
@@ -1029,6 +1183,25 @@ fun PicRouletteApp(themeColor: Color) {
                 favoriteMappings = finalBackfill.updatedMappings
                 saveFavoriteMappings(context, favoriteMappings)
 
+                val repairedAlbumMemberships = withContext(Dispatchers.IO) {
+                    relinkFavoriteAlbumMembershipsToOriginals(
+                        context = context,
+                        mappings = favoriteMappings
+                    )
+                }
+
+                if (repairedAlbumMemberships > 0) {
+                    albums = withContext(Dispatchers.IO) {
+                        loadAlbums(context)
+                    }
+                }
+
+                favoriteFiles = withContext(Dispatchers.IO) {
+                    readFavoritesList(context).getOrElse {
+                        favoritesAfterUpgrade
+                    }
+                }
+
                 pendingFavoriteLinkReviews = migrationResult.reviews
                 currentFavoriteLinkReviewIndex = 0
                 showBackupRestore = false
@@ -1046,6 +1219,9 @@ fun PicRouletteApp(themeColor: Color) {
                     append(
                         " • ${migrationResult.automaticallyLinked} linked automatically"
                     )
+                    if (shaRepair.repairedCount > 0) {
+                        append(" • ${shaRepair.repairedCount} recovered by fingerprint")
+                    }
                     append(
                         " • ${migrationResult.reviews.size} need review"
                     )
@@ -1053,6 +1229,12 @@ fun PicRouletteApp(themeColor: Color) {
                     if (migrationResult.noMatchCount > 0) {
                         append(
                             " • ${migrationResult.noMatchCount} not found"
+                        )
+                    }
+
+                    if (repairedAlbumMemberships > 0) {
+                        append(
+                            " • $repairedAlbumMemberships album links repaired"
                         )
                     }
 
@@ -1110,6 +1292,30 @@ fun PicRouletteApp(themeColor: Color) {
         offset.value = Offset.Zero;
     }
 
+    fun requestViewerExit() {
+        val pendingUri = pendingFavoriteReplacementUri
+        if (isFavoritesMode && pendingUri != null) {
+            if (isReplacingFavorite) return
+
+            isReplacingFavorite = true
+            scope.launch {
+                try {
+                    commitPendingFavoriteRemoval(pendingUri)
+                } finally {
+                    isReplacingFavorite = false
+                    uiVisible = false
+                    isExternalSession = false
+                    isPlaying = false
+                }
+            }
+        } else {
+            pendingFavoriteReplacementUri = null
+            uiVisible = false
+            isExternalSession = false
+            isPlaying = false
+        }
+    }
+
     BackHandler(enabled = isPlaying) {
         when {
             isReplacingFavorite || isRenaming -> Unit
@@ -1119,11 +1325,7 @@ fun PicRouletteApp(themeColor: Color) {
                 renameErrorMessage = null
             }
             showMetadata -> showMetadata = false
-            else -> {
-                pendingFavoriteReplacementUri = null
-                uiVisible = false
-                isPlaying = false
-            }
+            else -> requestViewerExit()
         }
     }
 
@@ -1691,28 +1893,42 @@ fun PicRouletteApp(themeColor: Color) {
                             // Never parse SharedPreferences or perform storage work from
                             // composition. favoriteMappings is refreshed from the durable store
                             // by the existing favorites refresh path.
-                            // Favorite state must belong to THIS exact library item. Using
-                            // sameImage() here can match a stale/deleted favorite copy (or a
-                            // duplicate image) after navigation and refill the heart.
-                            favoriteMappings.any { mapping ->
-                                !mapping.isDeleted &&
-                                    mapping.favoriteUri.isNotEmpty() &&
-                                    (
-                                        mapping.originalUri == currentUri.toString() ||
-                                            mapping.favoriteUri == currentUri.toString()
-                                    )
-                            }
+                            // Favorite state must belong to THIS logical library item. Exact
+                            // favorite-copy URIs are still required, but the saved original is
+                            // allowed to match by document identity because Android can expose
+                            // the same source photo through a different URI representation.
+                            findActiveFavoriteMapping(
+                                mappings = favoriteMappings,
+                                photoUri = currentUri.toString()
+                            ) { savedOriginalUri, currentPhotoUri ->
+                                sameImage(
+                                    Uri.parse(savedOriginalUri),
+                                    Uri.parse(currentPhotoUri)
+                                )
+                            } != null
                         }
                     }
 
                     /*
-                     * Moving to another favorite cancels a pending replacement.
-                     * Nothing has been deleted yet, so cancellation is free.
+                     * Favorites Roulette uses a two-phase unfavorite operation. The first
+                     * heart tap only arms removal, keeping the old favorite file and mapping
+                     * intact so the user can safely zoom/pan and favorite it again. Once the
+                     * user navigates away, the pending removal is committed.
                      */
                     LaunchedEffect(currentUri, isFavoritesMode) {
-                        pendingFavoriteReplacementUri = null
                         unavailablePhotoUri = null
                         missingPhotoRecoveryAttemptedUri = null
+
+                        val pendingUri = pendingFavoriteReplacementUri
+                        if (
+                            isFavoritesMode &&
+                            pendingUri != null &&
+                            pendingUri != currentUri
+                        ) {
+                            commitPendingFavoriteRemoval(pendingUri)
+                        } else if (!isFavoritesMode) {
+                            pendingFavoriteReplacementUri = null
+                        }
                     }
 
                     /*
@@ -1970,7 +2186,7 @@ fun PicRouletteApp(themeColor: Color) {
                                         Arrangement.SpaceBetween,
                                         Alignment.CenterVertically
                                     ) {
-                                        Button(onClick = { isPlaying = false }) { Text("Exit") }
+                                        Button(onClick = { requestViewerExit() }) { Text("Exit") }
                                         IconButton(
                                             onClick = { showMetadata = !showMetadata },
                                             modifier = Modifier.size(64.dp)
@@ -2001,115 +2217,183 @@ fun PicRouletteApp(themeColor: Color) {
                                                      * arms the current favorite. Second tap saves the
                                                      * current zoom/pan as a replacement.
                                                      */
-                                                    if (isFavoritesMode && isHeartFilled) {
-                                                        pendingFavoriteReplacementUri = currentUri
-                                                        return@IconButton
-                                                    }
-
                                                     scope.launch {
                                                         if (isFavoritesMode) {
                                                             isReplacingFavorite = true
 
                                                             try {
+                                                                val currentUriString = currentUri.toString()
+                                                                val existingMapping = favoriteMappings.find { candidate ->
+                                                                    !candidate.isDeleted &&
+                                                                        candidate.favoriteUri.isNotBlank() &&
+                                                                        (candidate.favoriteUri == currentUriString ||
+                                                                            runCatching {
+                                                                                sameImage(
+                                                                                    Uri.parse(candidate.favoriteUri),
+                                                                                    currentUri
+                                                                                )
+                                                                            }.getOrDefault(false))
+                                                                }
+
+                                                                if (existingMapping == null) {
+                                                                    snackbarHostState.showSnackbar(
+                                                                        "This favorite has no source link, so it could not be changed safely."
+                                                                    )
+                                                                    pendingFavoriteReplacementUri = null
+                                                                    return@launch
+                                                                }
+
+                                                                if (isHeartFilled) {
+                                                                    /*
+                                                                     * Phase 1 of unfavorite: do not delete anything yet.
+                                                                     * Keeping the old favorite file and mapping alive makes
+                                                                     * re-favoriting after zoom/pan completely reversible.
+                                                                     * Navigation commits the removal in the effect above.
+                                                                     */
+                                                                    pendingFavoriteReplacementUri = currentUri
+                                                                    unavailablePhotoUri = null
+                                                                    missingPhotoRecoveryAttemptedUri = null
+                                                                    scale.floatValue = 1f
+                                                                    offset.value = Offset.Zero
+                                                                    return@launch
+                                                                }
+
+                                                                /*
+                                                                 * Phase 2: the user changed their mind and favorited the
+                                                                 * pending item again. Write the replacement FIRST from the
+                                                                 * still-readable old favorite. Only after the new mapping is
+                                                                 * persisted do we remove the old favorite file.
+                                                                 */
                                                                 hScale.animateTo(1.4f, spring())
                                                                 hScale.animateTo(1f, spring())
 
-                                                                val oldFavoriteUri = currentUri
-                                                                val favoriteIndex = currentIndex.intValue
-                                                                val existingMapping =
-                                                                    favoriteMappings.find { mapping ->
-                                                                        mapping.favoriteUri ==
-                                                                            oldFavoriteUri.toString()
-                                                                    }
-
-                                                                /*
-                                                                 * Re-crop exactly what is currently visible.
-                                                                 * If this favorite has an original mapping, the
-                                                                 * mapping itself is preserved below.
-                                                                 */
-                                                                val replacementUri =
-                                                                    saveToFavoritesFolder(
-                                                                        context = context,
-                                                                        sourceUri = oldFavoriteUri,
-                                                                        fileName = displayFileName,
-                                                                        scale = scale.floatValue,
-                                                                        offset = offset.value,
-                                                                        containerSize = containerSize,
-                                                                        displayMode =
-                                                                            currentPhotoDisplayMode
-                                                                    )
+                                                                val newFavoriteId = newFavoriteId()
+                                                                val replacementUri = saveToFavoritesFolder(
+                                                                    context = context,
+                                                                    sourceUri = currentUri,
+                                                                    fileName = existingMapping.originalFileName
+                                                                        .ifBlank { displayFileName },
+                                                                    favoriteId = newFavoriteId,
+                                                                    scale = scale.floatValue,
+                                                                    offset = offset.value,
+                                                                    containerSize = containerSize,
+                                                                    displayMode = currentPhotoDisplayMode
+                                                                )
 
                                                                 if (replacementUri == null) {
+                                                                    pendingFavoriteReplacementUri = null
                                                                     snackbarHostState.showSnackbar(
-                                                                        "The updated favorite could not be saved."
+                                                                        "The favorite could not be updated. Your original favorite was kept."
                                                                     )
                                                                     return@launch
                                                                 }
 
-                                                                /*
-                                                                 * Never delete first. If the old favorite cannot
-                                                                 * be removed, roll back the newly-created file so
-                                                                 * the user is not left with duplicate favorites.
-                                                                 */
-                                                                val oldDeleted =
-                                                                    withContext(Dispatchers.IO) {
-                                                                        deleteFavorite(
-                                                                            context,
-                                                                            oldFavoriteUri
-                                                                        )
-                                                                    }
-
-                                                                if (!oldDeleted) {
-                                                                    withContext(Dispatchers.IO) {
-                                                                        deleteFavorite(
-                                                                            context,
-                                                                            replacementUri
-                                                                        )
-                                                                    }
-                                                                    snackbarHostState.showSnackbar(
-                                                                        "The old favorite could not be replaced."
-                                                                    )
-                                                                    return@launch
-                                                                }
-
-                                                                if (existingMapping != null) {
-                                                                    val mappingUpdate =
-                                                                        replaceFavoriteMappingUri(
-                                                                            mappings = favoriteMappings,
-                                                                            oldFavoriteUri =
-                                                                                oldFavoriteUri.toString(),
-                                                                            newFavoriteUri =
-                                                                                replacementUri.toString()
-                                                                        )
-
-                                                                    favoriteMappings =
-                                                                        mappingUpdate.mappings
-
-                                                                    if (mappingUpdate.changed) {
-                                                                        saveFavoriteMappings(
-                                                                            context,
-                                                                            favoriteMappings
-                                                                        )
-                                                                    }
-                                                                }
-
-                                                                if (
-                                                                    favoriteIndex in
-                                                                    activeSessionList.indices &&
-                                                                    activeSessionList[favoriteIndex] ==
-                                                                        oldFavoriteUri
-                                                                ) {
-                                                                    activeSessionList[favoriteIndex] =
+                                                                val mappingsBeforeReplacement =
+                                                                    favoriteMappings.toMutableList()
+                                                                val replacementMapping = existingMapping.copy(
+                                                                    favoriteUri = replacementUri.toString(),
+                                                                    favoriteId = newFavoriteId,
+                                                                    favoriteFileName = displayNameForUri(
+                                                                        context,
                                                                         replacementUri
+                                                                    ),
+                                                                    dateAdded = System.currentTimeMillis(),
+                                                                    isDeleted = false
+                                                                )
+                                                                val updatedMappings = favoriteMappings.map { candidate ->
+                                                                    if (candidate == existingMapping ||
+                                                                        (existingMapping.favoriteId.isNotBlank() &&
+                                                                            candidate.favoriteId == existingMapping.favoriteId)
+                                                                    ) {
+                                                                        replacementMapping
+                                                                    } else {
+                                                                        candidate
+                                                                    }
+                                                                }.toMutableList()
+
+                                                                val mappingSaved = saveFavoriteMappings(
+                                                                    context = context,
+                                                                    mappings = updatedMappings,
+                                                                    synchronous = true
+                                                                )
+
+                                                                if (!mappingSaved) {
+                                                                    withContext(Dispatchers.IO) {
+                                                                        deleteFavorite(context, replacementUri)
+                                                                    }
+                                                                    pendingFavoriteReplacementUri = null
+                                                                    snackbarHostState.showSnackbar(
+                                                                        "The favorite could not be updated. Your original favorite was kept."
+                                                                    )
+                                                                    return@launch
+                                                                }
+
+                                                                favoriteMappings = updatedMappings
+
+                                                                val oldFavoriteCatalogId = resolveCatalogPhotoId(
+                                                                    context,
+                                                                    currentUri
+                                                                )
+                                                                val newFavoriteCatalogId = resolveCatalogPhotoId(
+                                                                    context,
+                                                                    replacementUri
+                                                                )
+
+                                                                val oldFavoriteDeleted = withContext(Dispatchers.IO) {
+                                                                    deleteFavorite(
+                                                                        context,
+                                                                        Uri.parse(existingMapping.favoriteUri)
+                                                                    )
+                                                                }
+
+                                                                if (!oldFavoriteDeleted) {
+                                                                    val rolledBack = saveFavoriteMappings(
+                                                                        context = context,
+                                                                        mappings = mappingsBeforeReplacement,
+                                                                        synchronous = true
+                                                                    )
+
+                                                                    if (rolledBack) {
+                                                                        favoriteMappings = mappingsBeforeReplacement
+                                                                        withContext(Dispatchers.IO) {
+                                                                            deleteFavorite(context, replacementUri)
+                                                                        }
+                                                                        pendingFavoriteReplacementUri = null
+                                                                        snackbarHostState.showSnackbar(
+                                                                            "The favorite could not be updated. Your original favorite was kept."
+                                                                        )
+                                                                        refreshFavs(context) { favoriteFiles = it }
+                                                                        return@launch
+                                                                    }
+
+                                                                    snackbarHostState.showSnackbar(
+                                                                        "The updated favorite was saved, but the old copy could not be cleaned up."
+                                                                    )
+                                                                } else {
+                                                                    if (
+                                                                        oldFavoriteCatalogId.isNotBlank() &&
+                                                                        newFavoriteCatalogId.isNotBlank() &&
+                                                                        oldFavoriteCatalogId != newFavoriteCatalogId
+                                                                    ) {
+                                                                        moveAlbumMembershipsToPhoto(
+                                                                            context = context,
+                                                                            fromPhotoId = oldFavoriteCatalogId,
+                                                                            toPhotoId = newFavoriteCatalogId
+                                                                        )
+                                                                    }
+                                                                    relinkFavoriteAlbumMembershipsToOriginals(
+                                                                        context = context,
+                                                                        mappings = updatedMappings
+                                                                    )
                                                                 }
 
                                                                 pendingFavoriteReplacementUri = null
+                                                                if (currentIndex.intValue in activeSessionList.indices) {
+                                                                    activeSessionList[currentIndex.intValue] = replacementUri
+                                                                }
                                                                 scale.floatValue = 1f
                                                                 offset.value = Offset.Zero
-
-                                                                refreshFavs(context) {
-                                                                    favoriteFiles = it
-                                                                }
+                                                                refreshFavs(context) { favoriteFiles = it }
                                                             } finally {
                                                                 isReplacingFavorite = false
                                                             }
@@ -2122,18 +2406,20 @@ fun PicRouletteApp(themeColor: Color) {
                                                          * add/remove favorite toggle.
                                                          */
                                                         if (isHeartFilled) {
-                                                            // isHeartFilled is based on the exact mapping URI, so removal
-                                                            // must use the same identity rule. The old sameImage-first
-                                                            // lookup could fail to find the mapping even while the UI
-                                                            // showed a filled heart, leaving the favorite untouched.
+                                                            // Use the same lookup rule as the heart state so a photo whose
+                                                            // source URI changed can still be unfavorited correctly. The
+                                                            // identity fallback applies only to the original, never to a
+                                                            // stale favorite-copy URI.
                                                             val currentUriString = currentUri.toString()
                                                             val mapping =
-                                                                favoriteMappings.find {
-                                                                    !it.isDeleted &&
-                                                                        (
-                                                                            it.originalUri == currentUriString ||
-                                                                                it.favoriteUri == currentUriString
-                                                                        )
+                                                                findActiveFavoriteMapping(
+                                                                    mappings = favoriteMappings,
+                                                                    photoUri = currentUriString
+                                                                ) { savedOriginalUri, currentPhotoUri ->
+                                                                    sameImage(
+                                                                        Uri.parse(savedOriginalUri),
+                                                                        Uri.parse(currentPhotoUri)
+                                                                    )
                                                                 }
 
                                                             mapping?.let { mapToDelete ->
@@ -2202,11 +2488,14 @@ fun PicRouletteApp(themeColor: Color) {
                                                                     context = context,
                                                                     uri = sourceUri
                                                                 )
+                                                            val photoId = resolveCatalogPhotoId(context, sourceUri)
+                                                            val favoriteId = newFavoriteId()
                                                             val favUri =
                                                                 saveToFavoritesFolder(
                                                                     context = context,
                                                                     sourceUri = sourceUri,
                                                                     fileName = displayFileName,
+                                                                    favoriteId = favoriteId,
                                                                     scale = scale.floatValue,
                                                                     offset = offset.value,
                                                                     containerSize = containerSize,
@@ -2234,6 +2523,9 @@ fun PicRouletteApp(themeColor: Color) {
                                                                                 favUri.toString(),
                                                                             originalFileName =
                                                                                 displayFileName,
+                                                                            photoId = photoId,
+                                                                            favoriteId = favoriteId,
+                                                                            favoriteFileName = displayNameForUri(context, favUri),
                                                                             originalRelativePath =
                                                                                 originalRelativePath,
                                                                             originalSha256 =
@@ -2251,6 +2543,9 @@ fun PicRouletteApp(themeColor: Color) {
                                                                                 favUri.toString(),
                                                                             originalFileName =
                                                                                 displayFileName,
+                                                                            photoId = photoId,
+                                                                            favoriteId = favoriteId,
+                                                                            favoriteFileName = displayNameForUri(context, favUri),
                                                                             originalRelativePath =
                                                                                 originalRelativePath,
                                                                             originalSha256 =
@@ -2963,63 +3258,126 @@ fun PicRouletteApp(themeColor: Color) {
                                 Surface(
                                     onClick = {
                                         scope.launch {
+                                            val reviewFavorite =
+                                                currentLinkReview.favoriteFile
+                                            val oldFavoriteUri =
+                                                reviewFavorite.mediaUri.toString()
+                                            val existingMapping =
+                                                findFavoriteMappingForFile(
+                                                    mappings = favoriteMappings,
+                                                    favoriteFile = reviewFavorite
+                                                )
+                                            val existingFavoriteId =
+                                                existingMapping?.favoriteId.orEmpty()
+
+                                            val durableFavoriteId = existingFavoriteId
+                                                .ifBlank {
+                                                    favoriteIdFromFileName(
+                                                        reviewFavorite.fileNameOnDisk
+                                                    )
+                                                }
+                                                .ifBlank { newFavoriteId() }
+
+                                            val identifiedFavorite =
+                                                withContext(Dispatchers.IO) {
+                                                    ensureFavoriteFileIdentity(
+                                                        context = context,
+                                                        favoriteUri = reviewFavorite.mediaUri,
+                                                        favoriteId = durableFavoriteId,
+                                                        knownFileName =
+                                                            reviewFavorite.fileNameOnDisk
+                                                    )
+                                                }
+
                                             val originalSha256 =
                                                 calculateOriginalSha256(
                                                     context = context,
                                                     uri = candidate.sourceUri
                                                 )
 
+                                            val photoId = withContext(Dispatchers.IO) {
+                                                resolveCatalogPhotoId(
+                                                    context = context,
+                                                    originalUri = candidate.sourceUri
+                                                )
+                                            }
+
+                                            val newFavoriteUri =
+                                                identifiedFavorite.first.toString()
+
+                                            if (
+                                                existingMapping?.photoId?.isNotBlank() == true &&
+                                                existingMapping.photoId != photoId &&
+                                                photoId.isNotBlank()
+                                            ) {
+                                                withContext(Dispatchers.IO) {
+                                                    moveAlbumMembershipsToPhoto(
+                                                        context = context,
+                                                        fromPhotoId = existingMapping.photoId,
+                                                        toPhotoId = photoId
+                                                    )
+                                                }
+                                            }
+
                                             val updatedMappings =
                                                 favoriteMappings
                                                     .filterNot { mapping ->
-
-                                                        mapping.favoriteUri ==
-                                                                currentLinkReview
-                                                                    .favoriteFile
-                                                                    .mediaUri
-                                                                    .toString() ||
-
-                                                                mapping.originalUri ==
-                                                                candidate
-                                                                    .sourceUri
-                                                                    .toString()
+                                                        (durableFavoriteId.isNotBlank() &&
+                                                            mapping.favoriteId.equals(
+                                                                durableFavoriteId,
+                                                                ignoreCase = true
+                                                            )) ||
+                                                            mapping.favoriteUri == oldFavoriteUri ||
+                                                            mapping.favoriteUri == newFavoriteUri ||
+                                                            (photoId.isNotBlank() &&
+                                                                mapping.photoId == photoId) ||
+                                                            mapping.originalUri ==
+                                                                candidate.sourceUri.toString()
                                                     }
                                                     .toMutableList()
 
                                             updatedMappings.add(
                                                 FavoriteMapping(
                                                     originalUri =
-                                                        candidate
-                                                            .sourceUri
-                                                            .toString(),
-
-                                                    favoriteUri =
-                                                        currentLinkReview
-                                                            .favoriteFile
-                                                            .mediaUri
-                                                            .toString(),
-
-                                                    originalFileName =
-                                                        candidate.fileName,
-
+                                                        candidate.sourceUri.toString(),
+                                                    favoriteUri = newFavoriteUri,
+                                                    originalFileName = candidate.fileName,
+                                                    photoId = photoId,
+                                                    favoriteId = durableFavoriteId,
+                                                    favoriteFileName =
+                                                        identifiedFavorite.second,
                                                     originalRelativePath =
                                                         candidate.relativePath,
-
-                                                    originalSha256 =
-                                                        originalSha256,
-
+                                                    originalSha256 = originalSha256,
                                                     dateAdded =
                                                         System.currentTimeMillis()
                                                 )
                                             )
 
-                                            favoriteMappings =
-                                                updatedMappings
+                                            favoriteMappings = updatedMappings
 
                                             saveFavoriteMappings(
                                                 context,
                                                 updatedMappings
                                             )
+
+                                            val albumLinksRepaired =
+                                                withContext(Dispatchers.IO) {
+                                                    relinkFavoriteAlbumMembershipsToOriginals(
+                                                        context = context,
+                                                        mappings = updatedMappings
+                                                    )
+                                                }
+
+                                            if (albumLinksRepaired > 0) {
+                                                albums = withContext(Dispatchers.IO) {
+                                                    loadAlbums(context)
+                                                }
+                                            }
+
+                                            refreshFavs(context) { updatedFavorites ->
+                                                favoriteFiles = updatedFavorites
+                                            }
 
                                             advanceFavoriteLinkReview()
                                         }
@@ -3156,15 +3514,20 @@ fun PicRouletteApp(themeColor: Color) {
                 val albumName = albums.firstOrNull { it.id == albumId }?.name ?: "album"
                 val viewerPhotoString = viewerPhoto.toString()
                 val photoString = photo.toString()
-                val photoIsFavorited = favoriteMappings.any { mapping ->
-                    !mapping.isDeleted &&
-                        mapping.favoriteUri.isNotBlank() &&
-                        (
-                            mapping.originalUri == photoString ||
-                                mapping.originalUri == viewerPhotoString ||
-                                mapping.favoriteUri == viewerPhotoString
-                        )
-                }
+                val photoIsFavorited = favoriteFiles.any { favoriteFile ->
+                    favoriteFile.mediaUri.toString() == viewerPhotoString ||
+                        runCatching {
+                            sameImage(favoriteFile.mediaUri, viewerPhoto)
+                        }.getOrDefault(false)
+                } || findActiveFavoriteMapping(
+                    mappings = favoriteMappings,
+                    photoUri = photoString
+                ) { savedOriginalUri, currentPhotoUri ->
+                    sameImage(
+                        Uri.parse(savedOriginalUri),
+                        Uri.parse(currentPhotoUri)
+                    )
+                } != null
                 albums = setPhotoInAlbum(context, albums, albumId, photo, included)
                 Toast.makeText(
                     context,
@@ -3184,15 +3547,20 @@ fun PicRouletteApp(themeColor: Color) {
                 val albumName = name.trim()
                 val viewerPhotoString = viewerPhoto.toString()
                 val photoString = photo.toString()
-                val photoIsFavorited = favoriteMappings.any { mapping ->
-                    !mapping.isDeleted &&
-                        mapping.favoriteUri.isNotBlank() &&
-                        (
-                            mapping.originalUri == photoString ||
-                                mapping.originalUri == viewerPhotoString ||
-                                mapping.favoriteUri == viewerPhotoString
-                        )
-                }
+                val photoIsFavorited = favoriteFiles.any { favoriteFile ->
+                    favoriteFile.mediaUri.toString() == viewerPhotoString ||
+                        runCatching {
+                            sameImage(favoriteFile.mediaUri, viewerPhoto)
+                        }.getOrDefault(false)
+                } || findActiveFavoriteMapping(
+                    mappings = favoriteMappings,
+                    photoUri = photoString
+                ) { savedOriginalUri, currentPhotoUri ->
+                    sameImage(
+                        Uri.parse(savedOriginalUri),
+                        Uri.parse(currentPhotoUri)
+                    )
+                } != null
                 albums = createAlbum(context, albums, name, photo)
                 Toast.makeText(
                     context,

@@ -72,12 +72,28 @@ fun migrateExistingFavoriteLinks(
 
     favoriteFiles.forEach { favoriteFile ->
 
+        val durableFavoriteId = favoriteIdFromFileName(
+            favoriteFile.fileNameOnDisk
+        )
+
         /*
          * Do not touch favorites that are already mapped.
          */
         if (
-            favoriteFile.mediaUri.toString() in
-            mappedFavoriteUris
+            (durableFavoriteId.isNotBlank() &&
+                updatedMappings.any { mapping ->
+                    mapping.favoriteId.equals(
+                        durableFavoriteId,
+                        ignoreCase = true
+                    )
+                }) ||
+            favoriteFile.mediaUri.toString() in mappedFavoriteUris ||
+            updatedMappings.any { mapping ->
+                mapping.favoriteUri.isNotBlank() &&
+                    runCatching {
+                        sameImage(Uri.parse(mapping.favoriteUri), favoriteFile.mediaUri)
+                    }.getOrDefault(false)
+            }
         ) {
             return@forEach
         }
@@ -99,8 +115,13 @@ fun migrateExistingFavoriteLinks(
             sourcesByMatchKey[matchKey]
                 .orEmpty()
                 .filterNot { candidate ->
-                    candidate.sourceUri.toString() in
-                            usedOriginalUris
+                    candidate.sourceUri.toString() in usedOriginalUris ||
+                        updatedMappings.any { mapping ->
+                            mapping.originalUri.isNotBlank() &&
+                                runCatching {
+                                    sameImage(Uri.parse(mapping.originalUri), candidate.sourceUri)
+                                }.getOrDefault(false)
+                        }
                 }
 
         when (availableCandidates.size) {
@@ -122,6 +143,11 @@ fun migrateExistingFavoriteLinks(
 
                         originalFileName =
                             candidate.fileName,
+
+                        favoriteId = durableFavoriteId,
+
+                        favoriteFileName =
+                            favoriteFile.fileNameOnDisk,
 
                         dateAdded =
                             System.currentTimeMillis()
@@ -240,11 +266,23 @@ private fun favoriteMatchKey(
         )
 
     /*
+     * Durable favorites start with PRF_<UUID>_. Remove that identity prefix
+     * before applying the legacy filename heuristics below.
+     */
+    val withoutDurableId = withoutExtension.replace(
+        Regex(
+            "^PRF_[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}_",
+            RegexOption.IGNORE_CASE
+        ),
+        ""
+    )
+
+    /*
      * Current PicRoulette favorites are saved as
      * <original-stem>_yyyyMMddHHmmssSSS.jpg. Strip that generated
      * 17-digit suffix before comparing the favorite to its source.
      */
-    val withoutGeneratedTimestamp = withoutExtension
+    val withoutGeneratedTimestamp = withoutDurableId
         .replace(
             Regex("_\\d{17}$"),
             ""

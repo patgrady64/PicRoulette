@@ -52,6 +52,12 @@ interface AlbumDao {
     @Query("SELECT * FROM photos WHERE stableKey = :key LIMIT 1")
     fun photoByStableKey(key: String): CatalogPhotoEntity?
 
+    @Query("SELECT * FROM photos WHERE currentUri = :uri LIMIT 1")
+    fun photoByCurrentUri(uri: String): CatalogPhotoEntity?
+
+    @Query("SELECT * FROM photos WHERE id = :id LIMIT 1")
+    fun photoById(id: String): CatalogPhotoEntity?
+
     @Query(
         "SELECT * FROM photos " +
                 "WHERE displayName = :name AND sizeBytes = :size"
@@ -105,6 +111,9 @@ interface AlbumDao {
                 "WHERE albumId = :albumId"
     )
     fun membershipCount(albumId: String): Int
+
+    @Query("SELECT albumId FROM album_photos WHERE photoId = :photoId")
+    fun albumIdsForPhoto(photoId: String): List<String>
 
     @Query("SELECT COUNT(*) FROM photos")
     fun photoCount(): Int

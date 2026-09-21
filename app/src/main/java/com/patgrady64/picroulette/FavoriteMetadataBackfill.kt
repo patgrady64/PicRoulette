@@ -28,8 +28,7 @@ suspend fun backfillFavoriteMappingMetadata(
 ): FavoriteMetadataBackfillResult =
     withContext(Dispatchers.IO) {
 
-        val updatedMappings =
-            mappings.toMutableList()
+        val updatedMappings = mappings.toMutableList()
 
         var updatedCount = 0
         var alreadyCompleteCount = 0
@@ -38,134 +37,104 @@ suspend fun backfillFavoriteMappingMetadata(
         val total = updatedMappings.size
 
         updatedMappings.indices.forEach { index ->
+            val existing = updatedMappings[index]
 
-            val existing =
-                updatedMappings[index]
-
-            val alreadyComplete =
-                existing.isDeleted ||
-                    (existing.originalRelativePath.isNotBlank() &&
-                        existing.originalSha256.isNotBlank())
-
-            if (alreadyComplete) {
+            if (existing.isDeleted) {
                 alreadyCompleteCount++
-
-                reportBackfillProgress(
-                    completed = index + 1,
-                    total = total,
-                    onProgress = onProgress
-                )
-
+                reportBackfillProgress(index + 1, total, onProgress)
                 return@forEach
             }
 
-            val originalUri =
-                runCatching {
-                    Uri.parse(existing.originalUri)
-                }.getOrNull()
+            val originalUri = existing.originalUri
+                .takeIf { it.isNotBlank() }
+                ?.let { runCatching { Uri.parse(it) }.getOrNull() }
 
-            if (
-                originalUri == null ||
-                existing.originalUri.isBlank()
-            ) {
-                hashFailureCount++
+            val favoriteUri = existing.favoriteUri
+                .takeIf { it.isNotBlank() }
+                ?.let { runCatching { Uri.parse(it) }.getOrNull() }
 
-                reportBackfillProgress(
-                    completed = index + 1,
-                    total = total,
-                    onProgress = onProgress
+            val currentFavoriteName = existing.favoriteFileName.ifBlank {
+                favoriteUri?.let { displayNameForUri(context, it) }.orEmpty()
+            }
+
+            val durableFavoriteId = existing.favoriteId.ifBlank {
+                favoriteIdFromFileName(currentFavoriteName).ifBlank {
+                    newFavoriteId()
+                }
+            }
+
+            var durableFavoriteUri = existing.favoriteUri
+            var durableFavoriteName = currentFavoriteName
+
+            if (favoriteUri != null) {
+                val renamed = ensureFavoriteFileIdentity(
+                    context = context,
+                    favoriteUri = favoriteUri,
+                    favoriteId = durableFavoriteId,
+                    knownFileName = currentFavoriteName
                 )
-
-                return@forEach
+                durableFavoriteUri = renamed.first.toString()
+                durableFavoriteName = renamed.second
             }
 
-            val relativePath =
-                if (
-                    existing
-                        .originalRelativePath
-                        .isNotBlank()
-                ) {
-                    existing.originalRelativePath
-                } else {
-                    getOriginalRelativePath(
-                        originalUri
-                    )
-                }
+            val durablePhotoId = existing.photoId.ifBlank {
+                originalUri?.let { resolveCatalogPhotoId(context, it) }.orEmpty()
+            }
 
-            val sha256 =
-                if (
-                    existing
-                        .originalSha256
-                        .isNotBlank()
-                ) {
-                    existing.originalSha256
-                } else {
-                    calculateOriginalSha256(
-                        context = context,
-                        uri = originalUri
-                    )
-                }
-
-            if (sha256.isBlank()) {
+            if (originalUri == null) {
                 hashFailureCount++
             }
 
-            val changed =
-                relativePath !=
-                        existing.originalRelativePath ||
-                        sha256 !=
-                        existing.originalSha256
+            val relativePath = when {
+                existing.originalRelativePath.isNotBlank() -> existing.originalRelativePath
+                originalUri != null -> getOriginalRelativePath(originalUri)
+                else -> ""
+            }
 
-            if (changed) {
-                updatedMappings[index] =
-                    existing.copy(
-                        originalRelativePath =
-                            relativePath,
+            val sha256 = when {
+                existing.originalSha256.isNotBlank() -> existing.originalSha256
+                originalUri != null -> calculateOriginalSha256(context, originalUri)
+                else -> ""
+            }
 
-                        originalSha256 =
-                            sha256
-                    )
+            if (originalUri != null && sha256.isBlank()) {
+                hashFailureCount++
+            }
 
+            val upgraded = existing.copy(
+                favoriteUri = durableFavoriteUri,
+                photoId = durablePhotoId,
+                favoriteId = durableFavoriteId,
+                favoriteFileName = durableFavoriteName,
+                originalRelativePath = relativePath,
+                originalSha256 = sha256
+            )
+
+            if (upgraded != existing) {
+                updatedMappings[index] = upgraded
                 updatedCount++
+            } else {
+                alreadyCompleteCount++
             }
 
             /*
-             * Save periodically so most progress survives if the
-             * app is interrupted during a long upgrade.
+             * Commit in small batches so a large one-time migration survives an
+             * app interruption without restarting from zero.
              */
-            if (
-                (index + 1) % 25 == 0
-            ) {
-                saveFavoriteMappings(
-                    context,
-                    updatedMappings
-                )
+            if ((index + 1) % 25 == 0) {
+                saveFavoriteMappings(context, updatedMappings)
             }
 
-            reportBackfillProgress(
-                completed = index + 1,
-                total = total,
-                onProgress = onProgress
-            )
+            reportBackfillProgress(index + 1, total, onProgress)
         }
 
-        saveFavoriteMappings(
-            context,
-            updatedMappings
-        )
+        saveFavoriteMappings(context, updatedMappings)
 
         FavoriteMetadataBackfillResult(
-            updatedMappings =
-                updatedMappings,
-
-            updatedCount =
-                updatedCount,
-
-            alreadyCompleteCount =
-                alreadyCompleteCount,
-
-            hashFailureCount =
-                hashFailureCount
+            updatedMappings = updatedMappings,
+            updatedCount = updatedCount,
+            alreadyCompleteCount = alreadyCompleteCount,
+            hashFailureCount = hashFailureCount
         )
     }
 

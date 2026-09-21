@@ -43,6 +43,39 @@ class FavoriteMappingOperationsTest {
     }
 
     @Test
+    fun findActiveFavoriteMapping_recognizesSameOriginalWithChangedUri() {
+        val result = findActiveFavoriteMapping(
+            mappings = listOf(mapping),
+            photoUri = "content://new-provider/original/1"
+        ) { savedOriginalUri, currentPhotoUri ->
+            savedOriginalUri.endsWith("/original/1") &&
+                currentPhotoUri.endsWith("/original/1")
+        }
+
+        assertEquals(mapping, result)
+    }
+
+    @Test
+    fun findActiveFavoriteMapping_doesNotIdentityMatchFavoriteCopy() {
+        val result = findActiveFavoriteMapping(
+            mappings = listOf(mapping),
+            photoUri = "content://different/favorite/old"
+        ) { _, _ -> true }
+
+        assertEquals(null, result)
+    }
+
+    @Test
+    fun findActiveFavoriteMapping_ignoresDeletedMapping() {
+        val result = findActiveFavoriteMapping(
+            mappings = listOf(mapping.copy(isDeleted = true)),
+            photoUri = mapping.originalUri
+        ) { _, _ -> true }
+
+        assertEquals(null, result)
+    }
+
+    @Test
     fun folderMigration_repairsEveryMovedFavoriteConnection() {
         val other = mapping.copy(
             originalUri = "content://original/2",

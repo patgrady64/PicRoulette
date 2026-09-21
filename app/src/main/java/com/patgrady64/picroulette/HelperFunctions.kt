@@ -147,6 +147,9 @@ fun saveFavoriteMappings(
         obj.put("originalUri", mapping.originalUri)
         obj.put("favoriteUri", mapping.favoriteUri)
         obj.put("originalFileName", mapping.originalFileName)
+        obj.put("photoId", mapping.photoId)
+        obj.put("favoriteId", mapping.favoriteId)
+        obj.put("favoriteFileName", mapping.favoriteFileName)
         obj.put("originalRelativePath", mapping.originalRelativePath)
         obj.put("originalSha256", mapping.originalSha256)
         obj.put("dateAdded", mapping.dateAdded)
@@ -201,6 +204,15 @@ fun getFavoriteMappings(
 
                     originalFileName =
                         obj.getString("originalFileName"),
+
+                    photoId =
+                        obj.optString("photoId", ""),
+
+                    favoriteId =
+                        obj.optString("favoriteId", ""),
+
+                    favoriteFileName =
+                        obj.optString("favoriteFileName", ""),
 
                     originalRelativePath =
                         obj.optString("originalRelativePath", ""),

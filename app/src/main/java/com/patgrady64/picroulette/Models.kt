@@ -18,6 +18,14 @@ data class FavoriteMapping(
     val originalFileName: String,
 
     /*
+     * Durable PicRoulette identities. These are intentionally independent
+     * of Android content URIs, which can change after moves/rescans.
+     */
+    val photoId: String = "",
+    val favoriteId: String = "",
+    val favoriteFileName: String = "",
+
+    /*
      * Portable identity information.
      *
      * These have defaults so mappings created by older
