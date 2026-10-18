@@ -371,6 +371,29 @@ fun albumMembershipCount(
         .membershipCount(albumId)
 }
 
+/** Look up membership by catalog identity, not just the URI currently displayed.
+ * A favorites copy and a rescanned original can have different content URIs.
+ */
+fun isPhotoInAnyAlbum(context: Context, uri: Uri): Boolean {
+    val dao = PicRouletteDatabase.get(context).albumDao()
+    val candidates = linkedAlbumPhotoUris(context, uri).map(Uri::parse) + uri
+    return candidates.distinctBy { it.toString() }.any { candidate ->
+        val raw = candidate.toString()
+        val direct = dao.photoByCurrentUri(raw)
+        if (direct != null && dao.albumIdsForPhoto(direct.id).isNotEmpty()) return@any true
+        val photoIdentity = identity(context, candidate)
+        val stable = dao.photoByStableKey(photoIdentity.stableKey)
+        if (stable != null && dao.albumIdsForPhoto(stable.id).isNotEmpty()) return@any true
+        // A provider may issue a different document URI after rescanning.
+        // Only match filename + size when they uniquely identify one photo.
+        if (photoIdentity.name != null && photoIdentity.size != null) {
+            val matches = dao.photosByNameAndSize(photoIdentity.name, photoIdentity.size)
+            if (matches.size == 1 && dao.albumIdsForPhoto(matches.single().id).isNotEmpty()) return@any true
+        }
+        false
+    }
+}
+
 fun loadAlbums(
     context: Context
 ): List<PhotoAlbum> {

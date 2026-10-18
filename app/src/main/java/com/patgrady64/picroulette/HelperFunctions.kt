@@ -294,10 +294,16 @@ fun deleteFavorite(
 }
 
 fun sameImage(uri1: Uri, uri2: Uri): Boolean {
-    return try {
-        DocumentsContract.getDocumentId(uri1) ==
-                DocumentsContract.getDocumentId(uri2)
-    } catch (e: Exception) {
-        uri1.toString() == uri2.toString()
-    }
+    if (uri1 == uri2) return true
+    // A document ID only identifies a file within the same provider. Never
+    // treat two missing IDs (or IDs from different providers) as equal.
+    if (uri1.authority != uri2.authority || uri1.authority == null) return false
+    return runCatching {
+        if (uri1.path?.contains("/document/") != true ||
+            uri2.path?.contains("/document/") != true) {
+            false
+        } else {
+            DocumentsContract.getDocumentId(uri1) == DocumentsContract.getDocumentId(uri2)
+        }
+    }.getOrDefault(false)
 }

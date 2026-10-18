@@ -162,6 +162,7 @@ fun PicRouletteApp(
     var showSmartRoulette by remember { mutableStateOf(false) }
     var showRouletteHistory by remember { mutableStateOf(false) }
     var smartFilters by remember { mutableStateOf(loadProRouletteFilters(context)) }
+    var showFilenameSearch by remember { mutableStateOf(false) }
     var historyGeneration by remember { mutableIntStateOf(0) }
     var showProUpgrade by remember { mutableStateOf(false) }
     var isAlbumMode by remember { mutableStateOf(false) }
@@ -1352,6 +1353,11 @@ fun PicRouletteApp(
                 scanFoldersCompleted = scanFoldersCompleted,
                 scanTotalFolders = scanTotalFolders,
                 scanCurrentFolder = scanCurrentFolder,
+                activeFilterLabel = if (isPro) listOfNotNull(
+                    smartFilters.dateFilter.takeIf { it != ProDateFilter.ANY }?.label,
+                    smartFilters.favoriteFilter.takeIf { it != ProFavoriteFilter.ANY }?.label
+                ).joinToString(" · ") else "",
+                onSearchPhotos = { showFilenameSearch = true },
                 onStartRoulette = {
                     android.util.Log.i(
                         "PR_VIEWER",
@@ -1874,12 +1880,40 @@ fun PicRouletteApp(
                      * The only empty-heart state there is the temporary
                      * replacement state requested by the user.
                      */
+                    // Album photos can have a new content URI after a library rescan.
+                    // Resolve the durable catalog ID off the UI thread so an existing
+                    // favorite keeps its filled heart even when its saved URI differs.
+                    var albumFavoritePhotoId by remember(currentUri) { mutableStateOf("") }
+                    LaunchedEffect(currentUri, isFavoritesMode) {
+                        albumFavoritePhotoId = ""
+                        if (!isFavoritesMode) {
+                            albumFavoritePhotoId = withContext(Dispatchers.IO) {
+                                PicRouletteDatabase.get(context).albumDao()
+                                    .photoByCurrentUri(currentUri.toString())?.id.orEmpty()
+                            }
+                        }
+                    }
+
+                    // Album membership is stored against a durable catalog photo ID.
+                    // Resolve it when the displayed photo or albums change, including
+                    // Favorites Roulette, rather than relying on URI string equality.
+                    var catalogAlbumMember by remember(currentUri) { mutableStateOf(false) }
+                    LaunchedEffect(currentUri, albums, favoriteMappings, isAlbumMode) {
+                        catalogAlbumMember = isAlbumMode
+                        if (!isAlbumMode) {
+                            catalogAlbumMember = withContext(Dispatchers.IO) {
+                                isPhotoInAnyAlbum(context, currentUri)
+                            }
+                        }
+                    }
+
                     val isHeartFilled = remember(
                         currentUri,
                         isFavoritesMode,
                         favoriteMappings,
                         favoriteFiles,
-                        pendingFavoriteReplacementUri
+                        pendingFavoriteReplacementUri,
+                        albumFavoritePhotoId
                     ) {
                         if (isFavoritesMode) {
                             pendingFavoriteReplacementUri != currentUri
@@ -1905,8 +1939,56 @@ fun PicRouletteApp(
                                     Uri.parse(savedOriginalUri),
                                     Uri.parse(currentPhotoUri)
                                 )
-                            } != null
+                            } != null || (
+                                albumFavoritePhotoId.isNotBlank() &&
+                                    favoriteMappings.any { mapping ->
+                                        !mapping.isDeleted &&
+                                            mapping.favoriteUri.isNotBlank() &&
+                                            mapping.photoId == albumFavoritePhotoId
+                                    }
+                            )
                         }
+                    }
+
+                    // In regular Roulette (including album Roulette), display the saved
+                    // favorite copy when one exists. Keep currentUri unchanged: it is
+                    // the original session identity used for navigation, hearts, albums,
+                    // recent history, and other photo operations.
+                    // Resolve the displayed copy when entering a photo, not when
+                    // Favorites changes while that same photo is onscreen. Saving a
+                    // new crop should leave the currently zoomed original untouched;
+                    // the saved crop is shown on the next visit to this photo.
+                    val rouletteDisplayUri = remember(
+                        currentUri,
+                        isFavoritesMode,
+                        albumFavoritePhotoId
+                    ) {
+                        if (isFavoritesMode) {
+                            currentUri
+                        } else {
+                            val mapping = findActiveFavoriteMapping(
+                                mappings = favoriteMappings,
+                                photoUri = currentUri.toString()
+                            ) { savedOriginalUri, currentPhotoUri ->
+                                sameImage(Uri.parse(savedOriginalUri), Uri.parse(currentPhotoUri))
+                            } ?: favoriteMappings.firstOrNull { mapping ->
+                                !mapping.isDeleted &&
+                                    mapping.favoriteUri.isNotBlank() &&
+                                    albumFavoritePhotoId.isNotBlank() &&
+                                    mapping.photoId == albumFavoritePhotoId
+                            }
+                            mapping?.favoriteUri?.takeIf { it.isNotBlank() }
+                                ?.let(Uri::parse) ?: currentUri
+                        }
+                    }
+
+                    // The favorite is already cropped using the original's current zoom
+                    // and pan. When the displayed file changes, start the newly rendered
+                    // image at its natural fitted size; otherwise the original transform
+                    // would be applied a second time to the cropped favorite.
+                    LaunchedEffect(rouletteDisplayUri) {
+                        scale.floatValue = 1f
+                        offset.value = Offset.Zero
                     }
 
                     /*
@@ -1961,7 +2043,11 @@ fun PicRouletteApp(
                      * budget and Android kills it without a Java FATAL EXCEPTION.
                      */
                     val viewportGeometry =
-                        activePhotoMetadata?.let { metadata ->
+                        // Metadata belongs to the original, whose aspect ratio can
+                        // differ from a cropped favorite. Let Coil fit the favorite
+                        // naturally instead of applying the original's crop geometry.
+                        activePhotoMetadata?.takeIf { rouletteDisplayUri == currentUri }
+                            ?.let { metadata ->
                             val width = metadata.width
                             val height = metadata.height
                             if (width != null && height != null) {
@@ -1982,7 +2068,7 @@ fun PicRouletteApp(
                             scale.floatValue
 
                     AsyncImage(
-                        model = currentUri,
+                        model = rouletteDisplayUri,
                         contentDescription = "Current photo",
                         modifier = Modifier.fillMaxSize().graphicsLayer(
                             scaleX = renderedScale,
@@ -2599,31 +2685,11 @@ fun PicRouletteApp(
                                             .size(64.dp)
                                             .background(Color.Black.copy(alpha = 0.68f), CircleShape)
                                     ) {
-                                        // Favorites Roulette displays PicRoulette's copied favorite file,
-                                        // while albums intentionally store the URI of the original photo.
-                                        // Resolve that original before checking membership so the album
-                                        // indicator behaves the same in every Roulette mode.
-                                        val albumPhotoUri = if (isFavoritesMode) {
-                                            favoriteMappings
-                                                .find { it.favoriteUri == currentUri.toString() }
-                                                ?.originalUri
-                                                ?.takeIf { it.isNotBlank() }
-                                                ?.let(Uri::parse)
-                                                ?: currentUri
-                                        } else {
-                                            currentUri
-                                        }
-                                        // Every photo in Album Roulette necessarily belongs to the
-                                        // album that created this deck. Do not re-derive that fact from
-                                        // Android URI equality: SAF can expose the same photo through a
-                                        // different URI and make the icon appear unselected incorrectly.
-                                        val inAnyAlbum = isAlbumMode || albums.any {
-                                            albumPhotoUri.toString() in it.photoUris
-                                        }
+                                        val inAnyAlbum = catalogAlbumMember
                                         Icon(
                                             imageVector = Icons.Rounded.PhotoAlbum,
                                             contentDescription = if (inAnyAlbum) "In an album" else "Albums",
-                                            tint = if (inAnyAlbum) themeColor else Color.White,
+                                            tint = if (inAnyAlbum) Color.Yellow else Color.White,
                                             modifier = Modifier.size(34.dp)
                                         )
                                     }
@@ -3508,7 +3574,18 @@ fun PicRouletteApp(
         }
         AddToAlbumsSheet(
             currentPhoto = photo,
-            linkedPhotoUris = linkedAlbumPhotoUris(context, viewerPhoto),
+            linkedPhotoUris = remember(viewerPhoto, favoriteMappings) {
+                val raw = viewerPhoto.toString()
+                val mapping = findActiveFavoriteMapping(
+                    mappings = favoriteMappings,
+                    photoUri = raw
+                ) { savedOriginalUri, currentPhotoUri ->
+                    sameImage(Uri.parse(savedOriginalUri), Uri.parse(currentPhotoUri))
+                }
+                if (mapping == null) setOf(raw)
+                else setOf(mapping.originalUri, mapping.favoriteUri)
+                    .filter { it.isNotBlank() }.toSet()
+            },
             albums = albums,
             onToggle = { albumId, included ->
                 val albumName = albums.firstOrNull { it.id == albumId }?.name ?: "album"
@@ -3573,6 +3650,28 @@ fun PicRouletteApp(
                 ).show()
             },
             onDismiss = { showAddToAlbums = false }
+        )
+    }
+
+    if (showFilenameSearch) {
+        PhotoFilenameSearchSheet(
+            libraryPhotos = pickedFolderImages.value.toList(),
+            albums = albums,
+            favorites = favoriteFiles,
+            onOpenResults = { matches, selected, fromFavorites ->
+                if (matches.isNotEmpty()) {
+                    isFavoritesMode = fromFavorites
+                    isAlbumMode = !fromFavorites
+                    activeSessionList.clear()
+                    activeSessionSource.clear()
+                    activeSessionList.addAll(matches)
+                    activeSessionSource.addAll(matches)
+                    currentIndex.intValue = selected.coerceIn(0, matches.lastIndex)
+                    showFilenameSearch = false
+                    isPlaying = true
+                }
+            },
+            onDismiss = { showFilenameSearch = false }
         )
     }
 

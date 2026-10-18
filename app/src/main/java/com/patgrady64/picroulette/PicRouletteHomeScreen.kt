@@ -24,6 +24,7 @@ import androidx.compose.material.icons.rounded.PhotoAlbum
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -64,7 +65,9 @@ fun PicRouletteHomeScreen(
     scanFoldersCompleted: Int,
     scanTotalFolders: Int,
     scanCurrentFolder: String,
+    activeFilterLabel: String,
     onStartRoulette: () -> Unit,
+    onSearchPhotos: () -> Unit,
     onOpenRouletteCollection: () -> Unit,
     onOpenSmartRoulette: () -> Unit,
     onOpenRouletteHistory: () -> Unit,
@@ -103,6 +106,7 @@ fun PicRouletteHomeScreen(
                 scanFoldersCompleted = scanFoldersCompleted,
                 scanTotalFolders = scanTotalFolders,
                 scanCurrentFolder = scanCurrentFolder,
+                activeFilterLabel = activeFilterLabel,
                 onClick = onStartRoulette
             )
         }
@@ -173,6 +177,16 @@ fun PicRouletteHomeScreen(
                 color = Color.White,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
+            )
+        }
+
+        item {
+            HomeMenuRow(
+                title = "Search Photos",
+                subtitle = "Search filenames in folders, albums or favorites",
+                icon = Icons.Rounded.Search,
+                accentColor = Color(0xFF55D6C2),
+                onClick = onSearchPhotos
             )
         }
 
@@ -321,6 +335,7 @@ private fun StartRouletteCard(
     scanFoldersCompleted: Int,
     scanTotalFolders: Int,
     scanCurrentFolder: String,
+    activeFilterLabel: String,
     onClick: () -> Unit
 ) {
     val enabled = photoCount > 0 && !isScanning
@@ -437,6 +452,7 @@ private fun StartRouletteCard(
                             }
                         }
 
+                        photoCount > 0 && activeFilterLabel.isNotBlank() -> "Smart Filters active: $activeFilterLabel"
                         photoCount > 0 -> "Tap to shuffle your library and begin"
                         else -> "Choose at least one folder to get started"
                     },
