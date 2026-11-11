@@ -36,6 +36,7 @@ data class PhotoLibraryScanResult(
 suspend fun scanPhotoLibrary(
     context: Context,
     folders: List<FolderConfig>,
+    excludedDirectoryNames: Set<String> = emptySet(),
     onProgress: (PhotoScanProgress) -> Unit
 ): PhotoLibraryScanResult = withContext(Dispatchers.IO) {
     val imagesByFolder = linkedMapOf<String, List<Uri>>()
@@ -71,7 +72,8 @@ suspend fun scanPhotoLibrary(
                 context = context,
                 treeUri = config.uri,
                 parentDocumentId = rootDocumentId,
-                recursive = config.includeSubfolders
+                recursive = config.includeSubfolders,
+                excludedDirectoryNames = excludedDirectoryNames
             ) { imageUri ->
                 folderImages.add(imageUri)
                 val wasNewGlobally = allUniqueImages.add(imageUri)
@@ -136,6 +138,7 @@ private suspend fun scanDirectoryWithProgress(
     treeUri: Uri,
     parentDocumentId: String,
     recursive: Boolean,
+    excludedDirectoryNames: Set<String>,
     onImageFound: suspend (Uri) -> Unit
 ) {
     val childrenUri =
@@ -183,7 +186,9 @@ private suspend fun scanDirectoryWithProgress(
             when {
                 mimeType ==
                         DocumentsContract.Document.MIME_TYPE_DIR &&
-                        recursive -> {
+                        recursive &&
+                        documentId.substringAfterLast('/').substringAfterLast(':')
+                            .let { childName -> excludedDirectoryNames.none { it.equals(childName, ignoreCase = true) } } -> {
                     childFolderCount++
 
                     scanDirectoryWithProgress(
@@ -191,6 +196,7 @@ private suspend fun scanDirectoryWithProgress(
                         treeUri = treeUri,
                         parentDocumentId = documentId,
                         recursive = true,
+                        excludedDirectoryNames = excludedDirectoryNames,
                         onImageFound = onImageFound
                     )
                 }

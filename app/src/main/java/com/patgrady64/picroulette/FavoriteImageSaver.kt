@@ -73,9 +73,12 @@ suspend fun saveToFavoritesFolder(
         val originalStem = splitFileName(fileName).stem
             .replace(Regex("[^A-Za-z0-9 _-]"), "")
             .trim()
-            .take(40)
-            .ifBlank { "favorite" }
+            .take(45)
+            .ifBlank { "Unknown" }
 
+        // The original photo might be named just "5763.jpg" or similar.
+        // Give every favorite an understandable date and time, and retain the
+        // source filename so it remains possible to recognize where it came from.
         val timestamp = SimpleDateFormat(
             "yyyyMMddHHmmssSSS",
             Locale.US
@@ -83,7 +86,7 @@ suspend fun saveToFavoritesFolder(
 
         val finalName = favoriteFileNameWithId(
             favoriteId = favoriteId,
-            existingFileName = "${originalStem}_$timestamp.jpg"
+            existingFileName = "Favorite_${timestamp}_from_${originalStem}.jpg"
         )
 
         val destination = createFavoriteDestination(context, finalName)

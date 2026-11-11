@@ -25,6 +25,7 @@ import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -72,6 +73,7 @@ fun PicRouletteHomeScreen(
     onOpenSmartRoulette: () -> Unit,
     onOpenRouletteHistory: () -> Unit,
     onOpenAlbums: () -> Unit,
+    onOpenDuplicates: () -> Unit,
     onOpenFolders: () -> Unit,
     onOpenOptions: () -> Unit,
     onOpenAboutSupport: () -> Unit,
@@ -187,6 +189,16 @@ fun PicRouletteHomeScreen(
                 icon = Icons.Rounded.Search,
                 accentColor = Color(0xFF55D6C2),
                 onClick = onSearchPhotos
+            )
+        }
+
+        item {
+            HomeMenuRow(
+                title = "Duplicate Finder",
+                subtitle = "Review exact and visually similar photos",
+                icon = Icons.Rounded.ContentCopy,
+                accentColor = Color(0xFF55D6C2),
+                onClick = onOpenDuplicates
             )
         }
 

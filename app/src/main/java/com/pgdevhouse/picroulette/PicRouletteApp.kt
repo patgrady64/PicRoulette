@@ -1,0 +1,4263 @@
+package com.pgdevhouse.picroulette
+
+import android.widget.Toast
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.PhotoAlbum
+import androidx.compose.material.icons.rounded.Pin
+import androidx.compose.material.icons.rounded.PinDrop
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.window.DialogProperties
+import coil.compose.AsyncImage
+import com.pgdevhouse.picroulette.utils.exportFavoritesZip
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlin.collections.component1
+import kotlin.collections.component2
+import kotlin.collections.plus
+import com.pgdevhouse.picroulette.utils.FavoritesZipImportPhase
+import com.pgdevhouse.picroulette.utils.FavoritesZipImportProgress
+import com.pgdevhouse.picroulette.utils.importFavoritesZip
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+fun PicRouletteApp(
+    themeColor: Color,
+    externalImageRequest: ExternalImageRequest? = null,
+    onExternalImageRequestConsumed: () -> Unit = {}
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val isPro = ProAccess.isPro(context)
+
+    // --- State ---
+    var folderConfigs by remember { mutableStateOf(getSavedFolders(context)) }
+    val pickedFolderImages = remember { mutableStateOf<List<Uri>>(emptyList()) }
+    val activeSessionList = remember { mutableStateListOf<Uri>() }
+    val activeSessionSource = remember { mutableStateListOf<Uri>() }
+    // Seed Favorites from the locally stored mappings so the count and Roulette
+    // button are available immediately. The physical PR_FAVS scan below still
+    // runs in the background and replaces this cache with the verified list.
+    val initialFavoriteMappings = remember { getFavoriteMappings(context) }
+    var favoriteFiles by remember {
+        mutableStateOf(
+            initialFavoriteMappings
+                .asSequence()
+                .filter { !it.isDeleted && it.favoriteUri.isNotBlank() }
+                .map { mapping ->
+                    FavoriteFile(
+                        fileNameOnDisk = mapping.originalFileName.ifBlank { "favorite" },
+                        mediaUri = Uri.parse(mapping.favoriteUri)
+                    )
+                }
+                .toList()
+        )
+    }
+    var favoriteMappings by remember {
+        mutableStateOf(initialFavoriteMappings.toMutableList())
+    }
+    var favoritesRefreshGeneration by remember { mutableIntStateOf(0) }
+    var isFavoritesLoading by remember { mutableStateOf(true) }
+    var albums by remember { mutableStateOf(loadAlbums(context)) }
+    var showAddToAlbums by remember { mutableStateOf(false) }
+    var showAlbumsBrowser by remember { mutableStateOf(false) }
+    var showRouletteCollectionPicker by remember { mutableStateOf(false) }
+    var showSmartRoulette by remember { mutableStateOf(false) }
+    var showRouletteHistory by remember { mutableStateOf(false) }
+    var smartFilters by remember { mutableStateOf(loadProRouletteFilters(context)) }
+    var showFilenameSearch by remember { mutableStateOf(false) }
+    var historyGeneration by remember { mutableIntStateOf(0) }
+    var showProUpgrade by remember { mutableStateOf(false) }
+    var isAlbumMode by remember { mutableStateOf(false) }
+    var isExportingFavorites by remember {
+        mutableStateOf(false)
+    }
+    var isImportingFavorites by remember {
+        mutableStateOf(false)
+    }
+
+    var favoritesImportProgress by remember {
+        mutableStateOf<FavoritesZipImportProgress?>(null)
+    }
+
+    var isMigratingFavoriteLinks by remember {
+        mutableStateOf(false)
+    }
+
+    var favoriteRepairProgress by remember {
+        mutableFloatStateOf(0f)
+    }
+
+    var favoriteRepairStatus by remember {
+        mutableStateOf("")
+    }
+
+    var pendingFavoriteLinkReviews by remember {
+        mutableStateOf<List<FavoriteLinkReview>>(
+            emptyList()
+        )
+    }
+
+    var currentFavoriteLinkReviewIndex by remember {
+        mutableIntStateOf(0)
+    }
+    var isPlaying by remember { mutableStateOf(false) }
+    var isExternalSession by remember { mutableStateOf(false) }
+    var isFavoritesMode by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    val isScanning = remember { mutableStateOf(false) }
+    var scanPhotosFound by remember { mutableIntStateOf(0) }
+    var scanFoldersCompleted by remember { mutableIntStateOf(0) }
+    var scanTotalFolders by remember { mutableIntStateOf(0) }
+    var scanCurrentFolder by remember { mutableStateOf("") }
+    var showFoldersSheet by remember { mutableStateOf(false) }
+    var showOptionsSheet by remember { mutableStateOf(false) }
+    var showDuplicatesSheet by remember { mutableStateOf(false) }
+    var showBackupRestore by remember { mutableStateOf(false) }
+    var isMovingFavorites by remember { mutableStateOf(false) }
+    var favoriteFolderMigrationProgress by remember {
+        mutableStateOf<FavoriteFolderMigrationProgress?>(null)
+    }
+    var favoriteFolderMigrationStartedAt by remember {
+        mutableStateOf(0L)
+    }
+    var favoriteFolderLocation by remember {
+        mutableStateOf(favoriteFolderDescription(context))
+    }
+    var showAboutSupport by remember { mutableStateOf(false) }
+    var showTutorial by remember { mutableStateOf(!hasSeenTutorial(context)) }
+    var hapticFeedbackEnabled by remember {
+        mutableStateOf(isHapticFeedbackEnabled(context))
+    }
+    var keepScreenAwakeEnabled by remember {
+        mutableStateOf(isKeepScreenAwakeEnabled(context))
+    }
+    var showPhotoCounterByDefault by remember {
+        mutableStateOf(isPhotoCounterDefaultEnabled(context))
+    }
+    var scanLibraryOnStart by remember {
+        mutableStateOf(isScanLibraryOnStartEnabled(context))
+    }
+    var defaultPhotoDisplayMode by remember {
+        mutableStateOf(getDefaultPhotoDisplayMode(context))
+    }
+    var currentPhotoDisplayMode by remember {
+        mutableStateOf(defaultPhotoDisplayMode)
+    }
+    val currentIndex = remember { mutableIntStateOf(0) }
+    var uiVisible by remember { mutableStateOf(false) }
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+
+    /*
+     * Images opened/shared from another Android app use PicRoulette's regular
+     * viewer without being folded into the user's saved roulette library.
+     */
+    LaunchedEffect(externalImageRequest?.requestId) {
+        val request = externalImageRequest ?: return@LaunchedEffect
+        val incomingUris = request.uris.distinct()
+
+        if (incomingUris.isNotEmpty()) {
+            activeSessionList.clear()
+            activeSessionSource.clear()
+            activeSessionSource.addAll(incomingUris)
+            activeSessionList.addAll(incomingUris)
+            currentIndex.intValue = 0
+            isFavoritesMode = false
+            isAlbumMode = false
+            isExternalSession = true
+            isPlaying = true
+        }
+
+        onExternalImageRequestConsumed()
+    }
+
+    var showCountSetting by remember {
+        mutableStateOf(showPhotoCounterByDefault)
+    }
+    var showShuffleToast by remember { mutableStateOf(false) }
+
+    /*
+     * Briefly shows a filled heart when an already-favorited photo
+     * appears in the normal viewer.
+     */
+    var showFavoriteIndicator by remember {
+        mutableStateOf(false)
+    }
+
+    var showMetadata by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameBaseName by remember { mutableStateOf("") }
+    var renameErrorMessage by remember { mutableStateOf<String?>(null) }
+    var isRenaming by remember { mutableStateOf(false) }
+    var metadataRefreshVersion by remember { mutableIntStateOf(0) }
+    var currentPhotoMetadata by remember {
+        mutableStateOf<PhotoMetadataSnapshot?>(null)
+    }
+    var currentPhotoMetadataUri by remember { mutableStateOf<String?>(null) }
+
+    /*
+     * If Coil cannot load a photo, keep the viewer responsive while a
+     * trustworthy folder/favorites refresh decides whether the URI is truly
+     * gone or only temporarily unavailable.
+     */
+    var unavailablePhotoUri by remember { mutableStateOf<Uri?>(null) }
+    var missingPhotoRecoveryAttemptedUri by remember {
+        mutableStateOf<String?>(null)
+    }
+
+    /*
+     * Favorites Viewer only: tapping the filled heart arms the current
+     * favorite for replacement without deleting it. The old favorite stays
+     * safely on disk until the replacement has been written successfully.
+     */
+    var pendingFavoriteReplacementUri by remember {
+        mutableStateOf<Uri?>(null)
+    }
+    var isReplacingFavorite by remember { mutableStateOf(false) }
+
+    // --- Animation Logic ---
+    val currentView = LocalView.current
+    DisposableEffect(
+        isPlaying,
+        keepScreenAwakeEnabled,
+        isImportingFavorites,
+        isMovingFavorites
+    ) {
+        currentView.keepScreenOn =
+            isImportingFavorites ||
+                isMovingFavorites ||
+                (isPlaying && keepScreenAwakeEnabled)
+
+        onDispose {
+            currentView.keepScreenOn = false
+        }
+    }
+
+    val scale = remember { mutableFloatStateOf(1f) }
+    val offset = remember { mutableStateOf(Offset.Zero) }
+    val currentViewerUri =
+        activeSessionList.getOrNull(currentIndex.intValue)
+    val activePhotoMetadata =
+        currentPhotoMetadata.takeIf {
+            currentPhotoMetadataUri == currentViewerUri?.toString()
+        }
+
+    LaunchedEffect(currentViewerUri, metadataRefreshVersion) {
+        android.util.Log.i("PR_VIEWER", "metadata effect ENTER uri=$currentViewerUri refresh=$metadataRefreshVersion")
+        currentPhotoMetadata = null
+        currentPhotoMetadataUri = null
+        val uri = currentViewerUri ?: run {
+            android.util.Log.i("PR_VIEWER", "metadata effect EXIT: currentViewerUri is null")
+            return@LaunchedEffect
+        }
+        android.util.Log.i("PR_VIEWER", "metadata query START uri=$uri")
+        val metadata = withContext(Dispatchers.IO) {
+            queryPhotoMetadata(context, uri)
+        }
+        android.util.Log.i("PR_VIEWER", "metadata query DONE uri=$uri metadataNull=${metadata == null}")
+        currentPhotoMetadata = metadata
+        currentPhotoMetadataUri = uri.toString()
+        android.util.Log.i("PR_VIEWER", "metadata effect EXIT uri=$uri")
+    }
+
+    LaunchedEffect(showShuffleToast) {
+        if (showShuffleToast) {
+            delay(1800)
+            showShuffleToast = false
+        }
+    }
+
+    LaunchedEffect(isPlaying) {
+        android.util.Log.i("PR_VIEWER", "isPlaying effect ENTER isPlaying=$isPlaying deckSize=${activeSessionList.size} index=${currentIndex.intValue}")
+        if (isPlaying) {
+            // Start each new viewer session with the saved default mode.
+            currentPhotoDisplayMode = defaultPhotoDisplayMode
+
+            // Always enter the viewer with a clean fullscreen image.
+            uiVisible = false
+            showCountSetting = showPhotoCounterByDefault
+            showMetadata = false
+            showRenameDialog = false
+            renameErrorMessage = null
+            isRenaming = false
+            showDeleteDialog = false
+            showShuffleToast = false
+
+            // Reset zoom and image position.
+            scale.floatValue = 1f
+            offset.value = Offset.Zero
+            android.util.Log.i("PR_VIEWER", "isPlaying effect viewer reset COMPLETE")
+        }
+        android.util.Log.i("PR_VIEWER", "isPlaying effect EXIT isPlaying=$isPlaying")
+    }
+
+    val transformUiVisible by rememberUpdatedState(uiVisible)
+    val transformMetadata by rememberUpdatedState(activePhotoMetadata)
+    val transformContainerSize by rememberUpdatedState(containerSize)
+    val transformDisplayMode by rememberUpdatedState(currentPhotoDisplayMode)
+
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        if (!transformUiVisible) {
+            val newZoom = clampPhotoZoom(
+                currentZoom = scale.floatValue,
+                zoomChange = zoomChange
+            )
+            scale.floatValue = newZoom
+
+            val imageWidth = transformMetadata?.width
+            val imageHeight = transformMetadata?.height
+
+            offset.value =
+                if (imageWidth != null && imageHeight != null) {
+                    clampPhotoOffset(
+                        proposedOffset = offset.value + panChange,
+                        imageWidth = imageWidth,
+                        imageHeight = imageHeight,
+                        containerSize = transformContainerSize,
+                        userZoom = newZoom,
+                        displayMode = transformDisplayMode
+                    )
+                } else {
+                    Offset.Zero
+                }
+        }
+    }
+
+    fun reconcileActiveViewerSession(availableUris: List<Uri>) {
+        if (!isPlaying || isExternalSession || activeSessionList.isEmpty()) {
+            return
+        }
+
+        val result = reconcilePhotoSession(
+            sessionUris = activeSessionList.map { it.toString() },
+            availableUris = availableUris
+                .mapTo(mutableSetOf()) { it.toString() },
+            oldCurrentIndex = currentIndex.intValue
+        )
+
+        if (result.removedCount == 0) {
+            return
+        }
+
+        activeSessionList.clear()
+        activeSessionList.addAll(result.sessionUris.map(Uri::parse))
+        currentIndex.intValue = result.currentIndex
+
+        if (activeSessionList.isEmpty()) {
+            isPlaying = false
+        }
+    }
+
+    fun refreshFavs(context: Context, onResult: (List<FavoriteFile>) -> Unit) {
+        isFavoritesLoading = true
+        /* A newer refresh always wins over an older disk snapshot. */
+        favoritesRefreshGeneration++
+        val thisRefreshGeneration = favoritesRefreshGeneration
+
+        scope.launch(Dispatchers.IO) {
+            val diskResult = readFavoritesList(context)
+
+            withContext(Dispatchers.Main) {
+                /*
+                 * If another refresh started after this one, its disk snapshot
+                 * is newer. Ignore this result instead of letting an older
+                 * favorite list/count overwrite it.
+                 */
+                if (thisRefreshGeneration != favoritesRefreshGeneration) {
+                    return@withContext
+                }
+
+                val diskFiles = diskResult.getOrElse {
+                    snackbarHostState.showSnackbar(
+                        "Favorites couldn't be refreshed. Existing favorites were kept."
+                    )
+                    onResult(favoriteFiles)
+                    isFavoritesLoading = false
+                    return@withContext
+                }
+
+                /*
+                 * URI strings are locations, not identities. Repair any URI drift
+                 * from the durable favoriteId embedded in the PR_FAVS filename and
+                 * the photoId stored in the album catalog. Never delete a mapping
+                 * merely because a scan cannot currently find its file.
+                 */
+                val durableRepair = reconcileDurableFavoriteMappings(
+                    context = context,
+                    mappings = favoriteMappings,
+                    favoriteFiles = diskFiles
+                )
+                if (durableRepair.changed) {
+                    favoriteMappings = durableRepair.mappings
+                    saveFavoriteMappings(context, favoriteMappings)
+                }
+
+                if (isPlaying && isFavoritesMode) {
+                    reconcileActiveViewerSession(
+                        diskFiles.map { it.mediaUri }
+                    )
+                }
+
+                onResult(diskFiles)
+                isFavoritesLoading = false
+            }
+        }
+    }
+
+    suspend fun commitPendingFavoriteRemoval(pendingUri: Uri): Boolean {
+        val pendingUriString = pendingUri.toString()
+        val mapping = favoriteMappings.find { candidate ->
+            !candidate.isDeleted &&
+                candidate.favoriteUri.isNotBlank() &&
+                (candidate.favoriteUri == pendingUriString ||
+                    runCatching {
+                        sameImage(
+                            Uri.parse(candidate.favoriteUri),
+                            pendingUri
+                        )
+                    }.getOrDefault(false))
+        }
+
+        if (mapping == null) {
+            pendingFavoriteReplacementUri = null
+            snackbarHostState.showSnackbar(
+                "This favorite could not be removed safely, so it was kept."
+            )
+            return false
+        }
+
+        val mappingsBeforeRemoval = favoriteMappings.toMutableList()
+        val updatedMappings = favoriteMappings
+            .filterNot { candidate ->
+                candidate == mapping ||
+                    (mapping.favoriteId.isNotBlank() &&
+                        candidate.favoriteId == mapping.favoriteId)
+            }
+            .toMutableList()
+
+        val mappingSaved = saveFavoriteMappings(
+            context = context,
+            mappings = updatedMappings,
+            synchronous = true
+        )
+
+        if (!mappingSaved) {
+            pendingFavoriteReplacementUri = null
+            snackbarHostState.showSnackbar(
+                "The favorite could not be removed, so it was kept."
+            )
+            return false
+        }
+
+        val deleted = withContext(Dispatchers.IO) {
+            deleteFavorite(
+                context,
+                Uri.parse(mapping.favoriteUri)
+            )
+        }
+
+        if (!deleted) {
+            saveFavoriteMappings(
+                context = context,
+                mappings = mappingsBeforeRemoval,
+                synchronous = true
+            )
+            pendingFavoriteReplacementUri = null
+            snackbarHostState.showSnackbar(
+                "The favorite could not be removed, so it was kept."
+            )
+            return false
+        }
+
+        favoriteMappings = updatedMappings
+        pendingFavoriteReplacementUri = null
+
+        val retiredIndex = activeSessionList.indexOfFirst { sessionUri ->
+            sessionUri == pendingUri ||
+                runCatching { sameImage(sessionUri, pendingUri) }.getOrDefault(false)
+        }
+        if (retiredIndex >= 0) {
+            activeSessionList.removeAt(retiredIndex)
+            if (retiredIndex < currentIndex.intValue) {
+                currentIndex.intValue =
+                    (currentIndex.intValue - 1).coerceAtLeast(0)
+            } else if (currentIndex.intValue >= activeSessionList.size) {
+                currentIndex.intValue = activeSessionList.lastIndex.coerceAtLeast(0)
+            }
+        }
+
+        refreshFavs(context) { favoriteFiles = it }
+        return true
+    }
+
+    val scanAllFolders: suspend () -> Unit = {
+        isScanning.value = true
+        scanPhotosFound = 0
+        scanFoldersCompleted = 0
+        scanTotalFolders = folderConfigs.size
+        scanCurrentFolder = ""
+
+        try {
+            val cachedByFolder = loadCachedPhotoLibraryByFolder(context)
+            val legacyCachedImages = loadCachedPhotoLibrary(context)
+
+            val scanResult = scanPhotoLibrary(
+                context = context,
+                folders = folderConfigs
+            ) { progress ->
+                scanPhotosFound = progress.photosFound
+                scanFoldersCompleted = progress.foldersCompleted
+                scanTotalFolders = progress.totalFolders
+                scanCurrentFolder = progress.currentFolderName
+            }
+
+            val configuredKeys = folderConfigs.map { it.uri.toString() }
+            val freshStrings = scanResult.imagesByFolder.mapValues { entry ->
+                entry.value.map { it.toString() }
+            }
+            val cachedStrings = cachedByFolder.mapValues { entry ->
+                entry.value.map { it.toString() }
+            }
+            val failedKeys = scanResult.failures
+                .mapTo(mutableSetOf()) { it.folderUri.toString() }
+
+            val merged = mergeFolderScanResults(
+                configuredFolderKeys = configuredKeys,
+                freshFolderImages = freshStrings,
+                failedFolderKeys = failedKeys,
+                cachedFolderImages = cachedStrings
+            )
+
+            val hasUncachedFailure = failedKeys.any { it !in cachedStrings }
+            val fallbackFromLegacy =
+                if (hasUncachedFailure) legacyCachedImages else emptyList()
+
+            val mergedImages = (
+                merged.allImages.map(Uri::parse) + fallbackFromLegacy
+            ).distinctBy { it.toString() }
+
+            pickedFolderImages.value = mergedImages
+
+            albums = withContext(Dispatchers.IO) {
+                syncPhotoCatalog(context, mergedImages)
+                loadAlbums(context)
+            }
+
+            if (isPlaying && !isFavoritesMode) {
+                reconcileActiveViewerSession(mergedImages)
+            }
+
+            val folderCacheToPersist = linkedMapOf<String, List<Uri>>()
+            configuredKeys.forEach { folderKey ->
+                if (folderKey in failedKeys) {
+                    cachedByFolder[folderKey]?.let { cachedImages ->
+                        folderCacheToPersist[folderKey] = cachedImages
+                    }
+                } else {
+                    folderCacheToPersist[folderKey] =
+                        scanResult.imagesByFolder[folderKey].orEmpty()
+                }
+            }
+
+            saveCachedPhotoLibraryByFolder(
+                context = context,
+                folderImages = folderCacheToPersist
+            )
+            saveCachedPhotoLibrary(
+                context = context,
+                images = mergedImages
+            )
+
+            if (scanResult.failures.isNotEmpty()) {
+                val count = scanResult.failures.size
+                snackbarHostState.showSnackbar(
+                    if (count == 1) {
+                        "1 library folder could not be scanned. Last-known photos were kept when available."
+                    } else {
+                        "$count library folders could not be scanned. Last-known photos were kept when available."
+                    }
+                )
+            }
+        } finally {
+            isScanning.value = false
+            scanPhotosFound = pickedFolderImages.value.size
+            scanFoldersCompleted = scanTotalFolders
+        }
+    }
+
+    fun advanceFavoriteLinkReview() {
+        if (
+            currentFavoriteLinkReviewIndex >=
+            pendingFavoriteLinkReviews.lastIndex
+        ) {
+            pendingFavoriteLinkReviews =
+                emptyList()
+
+            currentFavoriteLinkReviewIndex = 0
+        } else {
+            currentFavoriteLinkReviewIndex++
+        }
+    }
+
+    val importFavoritesZipLauncher =
+        rememberLauncherForActivityResult(
+            contract =
+                ActivityResultContracts.OpenDocument()
+        ) { sourceZipUri ->
+
+            if (sourceZipUri == null) {
+                return@rememberLauncherForActivityResult
+            }
+
+            val existingFavoritesSnapshot =
+                favoriteFiles.toList()
+
+            val existingMappingsSnapshot =
+                favoriteMappings.toList()
+
+            val sourceImagesSnapshot =
+                pickedFolderImages.value.toList()
+
+            favoritesImportProgress =
+                FavoritesZipImportProgress(
+                    phase =
+                        FavoritesZipImportPhase.READING_BACKUP
+                )
+
+            isImportingFavorites = true
+
+            scope.launch {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        importFavoritesZip(
+                            context = context,
+                            sourceZipUri = sourceZipUri,
+                            existingFavorites =
+                                existingFavoritesSnapshot,
+                            existingMappings =
+                                existingMappingsSnapshot,
+                            sourceImages =
+                                sourceImagesSnapshot,
+                            onProgress = { progress ->
+                                scope.launch {
+                                    if (isImportingFavorites) {
+                                        favoritesImportProgress =
+                                            progress
+                                    }
+                                }
+                            }
+                        )
+                    }
+                }
+
+                result.onSuccess { importResult ->
+
+                    favoritesImportProgress =
+                        FavoritesZipImportProgress(
+                            phase =
+                                FavoritesZipImportPhase.FINISHING,
+                            completed = 1,
+                            total = 1,
+                            importedCount =
+                                importResult.importedCount,
+                            skippedDuplicateCount =
+                                importResult
+                                    .skippedDuplicateCount,
+                            failedCount =
+                                importResult.failedCount
+                        )
+
+                    favoriteMappings =
+                        importResult.updatedMappings
+
+                    albums = withContext(Dispatchers.IO) {
+                        loadAlbums(context)
+                    }
+
+                    saveFavoriteMappings(
+                        context,
+                        favoriteMappings
+                    )
+
+                    pendingFavoriteLinkReviews =
+                        importResult.reviews
+
+                    currentFavoriteLinkReviewIndex = 0
+
+                    val sizeMb =
+                        importResult.importedBytes /
+                                1024.0 /
+                                1024.0
+
+                    val message = buildString {
+                        append(
+                            "${importResult.importedCount} favorites imported"
+                        )
+
+                        append(
+                            " • %.1f MB".format(sizeMb)
+                        )
+
+                        if (importResult.skippedDuplicateCount > 0) {
+                            append(
+                                " • ${importResult.skippedDuplicateCount} already present"
+                            )
+                        }
+
+                        if (importResult.restoredLinkCount > 0) {
+                            append(
+                                " • ${importResult.restoredLinkCount} links restored"
+                            )
+                        }
+
+                        if (importResult.existingLinkCount > 0) {
+                            append(
+                                " • ${importResult.existingLinkCount} links already present"
+                            )
+                        }
+
+                        if (importResult.reviews.isNotEmpty()) {
+                            append(
+                                " • ${importResult.reviews.size} need review"
+                            )
+                        }
+
+                        if (importResult.unresolvedLinkCount > 0) {
+                            append(
+                                " • ${importResult.unresolvedLinkCount} originals not found"
+                            )
+                        }
+
+                        if (importResult.failedCount > 0) {
+                            append(
+                                " • ${importResult.failedCount} failed"
+                            )
+                        }
+
+                        if (importResult.restoredAlbumCount > 0) {
+                            append(" • ${importResult.restoredAlbumCount} albums restored")
+                        }
+
+                        if (importResult.unresolvedAlbumPhotoCount > 0) {
+                            append(" • ${importResult.unresolvedAlbumPhotoCount} album photos not found")
+                        }
+
+                        if (
+                            !importResult.containsSourceLinks ||
+                            importResult.missingSourceMetadataCount > 0
+                        ) {
+                            append(
+                                " • Repair can check older links"
+                            )
+                        }
+                    }
+
+                    /*
+                     * Keep the progress dialog visible until the physical
+                     * favorites list has been refreshed on the main thread.
+                     */
+                    refreshFavs(context) { updatedFavorites ->
+                        favoriteFiles = updatedFavorites
+                        showBackupRestore = false
+                        isImportingFavorites = false
+                        favoritesImportProgress = null
+
+                        android.widget.Toast.makeText(
+                            context,
+                            message,
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+
+                result.onFailure { exception ->
+                    exception.printStackTrace()
+
+                    isImportingFavorites = false
+                    favoritesImportProgress = null
+
+                    android.widget.Toast.makeText(
+                        context,
+                        exception.message
+                            ?: "Favorites import failed",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+
+    val folderLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocumentTree()
+        ) { uri: Uri? ->
+            uri?.let { selectedUri ->
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        selectedUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                }
+
+                if (folderConfigs.none { it.uri == selectedUri }) {
+                    folderConfigs = folderConfigs +
+                            FolderConfig(
+                                uri = selectedUri,
+                                includeSubfolders = true
+                            )
+
+                    saveFolders(context, folderConfigs)
+                }
+
+                showFoldersSheet = false
+
+                scope.launch {
+                    scanAllFolders()
+                }
+            }
+        }
+
+    fun moveFavoritesTo(selectedParentTreeUri: Uri?) {
+        if (!isPro || isMovingFavorites) return
+
+        // A Material bottom sheet is drawn above an AlertDialog. Close Options
+        // first so the migration progress cannot be hidden behind it.
+        showOptionsSheet = false
+        isMovingFavorites = true
+        val migrationStartedAt = System.currentTimeMillis()
+        favoriteFolderMigrationStartedAt = migrationStartedAt
+        favoriteFolderMigrationProgress = FavoriteFolderMigrationProgress(
+            completed = 0,
+            total = 0,
+            status = "Preparing Favorites folder…"
+        )
+        val mappingsSnapshot = favoriteMappings.toList()
+
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                migrateFavoriteFolder(
+                    context = context,
+                    selectedParentTreeUri = selectedParentTreeUri,
+                    mappings = mappingsSnapshot,
+                    onProgress = { progress ->
+                        scope.launch {
+                            if (isMovingFavorites) {
+                                favoriteFolderMigrationProgress = progress
+                            }
+                        }
+                    }
+                )
+            }
+
+            // Very small folders can finish between frames. Keep the completed
+            // progress state visible briefly so the user always receives feedback.
+            val remainingDisplayTime = 750L -
+                (System.currentTimeMillis() - migrationStartedAt)
+            if (remainingDisplayTime > 0L) {
+                delay(remainingDisplayTime)
+            }
+
+            isMovingFavorites = false
+            favoriteFolderMigrationProgress = null
+            result.onSuccess { migration ->
+                favoriteMappings = migration.updatedMappings
+                favoriteFolderLocation = favoriteFolderDescription(context)
+                refreshFavs(context) { favoriteFiles = it }
+                Toast.makeText(
+                    context,
+                    if (migration.movedCount == 1) {
+                        "1 favorite moved and connections repaired"
+                    } else {
+                        "${migration.movedCount} favorites moved and connections repaired"
+                    },
+                    Toast.LENGTH_LONG
+                ).show()
+            }.onFailure { exception ->
+                Toast.makeText(
+                    context,
+                    exception.message ?: "Favorites could not be moved",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    val favoriteFolderLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocumentTree()
+        ) { uri: Uri? ->
+            uri ?: return@rememberLauncherForActivityResult
+            val permissionFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            val permissionSaved = runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    permissionFlags
+                )
+            }.isSuccess
+
+            if (!permissionSaved) {
+                Toast.makeText(
+                    context,
+                    "PicRoulette needs permanent access to that folder.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
+                moveFavoritesTo(uri)
+            }
+        }
+
+    val exportFavoritesZipLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.CreateDocument(
+                "application/zip"
+            )
+        ) { destinationUri ->
+            if (destinationUri == null) {
+                return@rememberLauncherForActivityResult
+            }
+
+            val favoritesSnapshot = favoriteFiles.toList()
+            val mappingsSnapshot = favoriteMappings.toList()
+            val albumsSnapshot = albums.toList()
+
+            isExportingFavorites = true
+
+            scope.launch {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        exportFavoritesZip(
+                            context = context,
+                            destinationUri = destinationUri,
+                            favorites = favoritesSnapshot,
+                            mappings = mappingsSnapshot,
+                            albums = albumsSnapshot
+                        )
+                    }
+                }
+
+                isExportingFavorites = false
+
+                result.onSuccess { exportResult ->
+                    val sizeMb =
+                        exportResult.sourceBytesCopied /
+                                1024.0 /
+                                1024.0
+
+                    val message = buildString {
+                        append(
+                            "${exportResult.exportedCount} favorites backed up"
+                        )
+                        append(" • %.1f MB".format(sizeMb))
+
+                        if (exportResult.failedCount > 0) {
+                            append(
+                                " • ${exportResult.failedCount} failed"
+                            )
+                        }
+                    }
+
+                    android.widget.Toast.makeText(
+                        context,
+                        message,
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+
+                result.onFailure { exception ->
+                    exception.printStackTrace()
+
+                    android.widget.Toast.makeText(
+                        context,
+                        "Favorites backup failed",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+
+    val repairFavoriteLinks: () -> Unit = repair@{
+        if (
+            isMigratingFavoriteLinks ||
+            isImportingFavorites ||
+            isExportingFavorites ||
+            isScanning.value ||
+            favoriteFiles.isEmpty() ||
+            pickedFolderImages.value.isEmpty()
+        ) {
+            return@repair
+        }
+
+        val favoritesSnapshot = favoriteFiles.toList()
+        val sourceImagesSnapshot = pickedFolderImages.value.toList()
+        val mappingsSnapshot = favoriteMappings.toList()
+
+        isMigratingFavoriteLinks = true
+        favoriteRepairProgress = 0f
+        favoriteRepairStatus = "Upgrading Saved Links"
+
+        scope.launch {
+            try {
+                val durableRepair = withContext(Dispatchers.IO) {
+                    reconcileDurableFavoriteMappings(
+                        context = context,
+                        mappings = mappingsSnapshot,
+                        favoriteFiles = favoritesSnapshot
+                    )
+                }
+
+                favoriteMappings = durableRepair.mappings
+
+                val firstBackfill =
+                    backfillFavoriteMappingMetadata(
+                        context = context,
+                        mappings = durableRepair.mappings
+                    ) { completed, total ->
+                        withContext(Dispatchers.Main) {
+                            favoriteRepairStatus =
+                                "Upgrading Saved Links"
+
+                            favoriteRepairProgress =
+                                if (total == 0) {
+                                    1f
+                                } else {
+                                    completed.toFloat() /
+                                            total.toFloat()
+                                }
+                        }
+                    }
+
+                val favoritesAfterUpgrade = withContext(Dispatchers.IO) {
+                    readFavoritesList(context).getOrElse {
+                        favoritesSnapshot
+                    }
+                }
+
+                val postUpgradeReconcile = withContext(Dispatchers.IO) {
+                    reconcileDurableFavoriteMappings(
+                        context = context,
+                        mappings = firstBackfill.updatedMappings,
+                        favoriteFiles = favoritesAfterUpgrade
+                    )
+                }
+
+                favoriteMappings = postUpgradeReconcile.mappings
+                favoriteRepairStatus = "Verifying Original Photos"
+                favoriteRepairProgress = 0f
+
+                val shaRepair = repairFavoriteOriginalsBySha(
+                    context = context,
+                    mappings = postUpgradeReconcile.mappings,
+                    sourceImages = sourceImagesSnapshot
+                )
+
+                favoriteMappings = shaRepair.mappings
+                favoriteRepairStatus = "Finding Original Photos"
+
+                val migrationResult =
+                    withContext(Dispatchers.Default) {
+                        migrateExistingFavoriteLinks(
+                            favoriteFiles = favoritesAfterUpgrade,
+                            sourceImages = sourceImagesSnapshot,
+                            existingMappings = shaRepair.mappings
+                        )
+                    }
+
+                favoriteRepairStatus = "Finishing New Links"
+                favoriteRepairProgress = 0f
+
+                val finalBackfill =
+                    backfillFavoriteMappingMetadata(
+                        context = context,
+                        mappings = migrationResult.updatedMappings
+                    ) { completed, total ->
+                        withContext(Dispatchers.Main) {
+                            favoriteRepairStatus =
+                                "Finishing New Links"
+
+                            favoriteRepairProgress =
+                                if (total == 0) {
+                                    1f
+                                } else {
+                                    completed.toFloat() /
+                                        total.toFloat()
+                                }
+                        }
+                    }
+
+                favoriteMappings = finalBackfill.updatedMappings
+                saveFavoriteMappings(context, favoriteMappings)
+
+                val repairedAlbumMemberships = withContext(Dispatchers.IO) {
+                    relinkFavoriteAlbumMembershipsToOriginals(
+                        context = context,
+                        mappings = favoriteMappings
+                    )
+                }
+
+                if (repairedAlbumMemberships > 0) {
+                    albums = withContext(Dispatchers.IO) {
+                        loadAlbums(context)
+                    }
+                }
+
+                favoriteFiles = withContext(Dispatchers.IO) {
+                    readFavoritesList(context).getOrElse {
+                        favoritesAfterUpgrade
+                    }
+                }
+
+                pendingFavoriteLinkReviews = migrationResult.reviews
+                currentFavoriteLinkReviewIndex = 0
+                showBackupRestore = false
+
+                val upgradedCount =
+                    firstBackfill.updatedCount +
+                        finalBackfill.updatedCount
+
+                val hashFailureCount =
+                    firstBackfill.hashFailureCount +
+                        finalBackfill.hashFailureCount
+
+                val message = buildString {
+                    append("$upgradedCount links upgraded")
+                    append(
+                        " • ${migrationResult.automaticallyLinked} linked automatically"
+                    )
+                    if (shaRepair.repairedCount > 0) {
+                        append(" • ${shaRepair.repairedCount} recovered by fingerprint")
+                    }
+                    append(
+                        " • ${migrationResult.reviews.size} need review"
+                    )
+
+                    if (migrationResult.noMatchCount > 0) {
+                        append(
+                            " • ${migrationResult.noMatchCount} not found"
+                        )
+                    }
+
+                    if (repairedAlbumMemberships > 0) {
+                        append(
+                            " • $repairedAlbumMemberships album links repaired"
+                        )
+                    }
+
+                    if (hashFailureCount > 0) {
+                        append(
+                            " • $hashFailureCount hashes unavailable"
+                        )
+                    }
+                }
+
+                android.widget.Toast.makeText(
+                    context,
+                    message,
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } catch (exception: Exception) {
+                exception.printStackTrace()
+
+                android.widget.Toast.makeText(
+                    context,
+                    exception.message
+                        ?: "Favorite link repair failed",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                isMigratingFavoriteLinks = false
+                favoriteRepairProgress = 0f
+                favoriteRepairStatus = ""
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshFavs(context) { updatedList ->
+            favoriteFiles = updatedList
+        }
+
+        if (scanLibraryOnStart) {
+            scanAllFolders()
+        } else {
+            val cachedImages = loadCachedPhotoLibrary(context)
+            pickedFolderImages.value = cachedImages
+
+            albums = withContext(Dispatchers.IO) {
+                syncPhotoCatalog(context, cachedImages)
+                loadAlbums(context)
+            }
+
+            scanPhotosFound = cachedImages.size
+            scanTotalFolders = folderConfigs.size
+        }
+    }
+    LaunchedEffect(currentIndex.intValue) {
+        scale.floatValue = 1f;
+        offset.value = Offset.Zero;
+    }
+
+    fun requestViewerExit() {
+        val pendingUri = pendingFavoriteReplacementUri
+        if (isFavoritesMode && pendingUri != null) {
+            if (isReplacingFavorite) return
+
+            isReplacingFavorite = true
+            scope.launch {
+                try {
+                    commitPendingFavoriteRemoval(pendingUri)
+                } finally {
+                    isReplacingFavorite = false
+                    uiVisible = false
+                    isExternalSession = false
+                    isPlaying = false
+                }
+            }
+        } else {
+            pendingFavoriteReplacementUri = null
+            uiVisible = false
+            isExternalSession = false
+            isPlaying = false
+        }
+    }
+
+    BackHandler(enabled = isPlaying) {
+        when {
+            isReplacingFavorite || isRenaming -> Unit
+            showDeleteDialog -> showDeleteDialog = false
+            showRenameDialog -> {
+                showRenameDialog = false
+                renameErrorMessage = null
+            }
+            showMetadata -> showMetadata = false
+            else -> requestViewerExit()
+        }
+    }
+
+    LaunchedEffect(isPlaying, activeSessionList.size, currentIndex.intValue) {
+        android.util.Log.i(
+            "PR_VIEWER",
+            "UI STATE isPlaying=$isPlaying deckSize=${activeSessionList.size} index=${currentIndex.intValue} currentUri=$currentViewerUri"
+        )
+    }
+
+    Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
+        if (!isPlaying) {
+            // --- MAIN DASHBOARD UI ---
+            PicRouletteHomeScreen(
+                modifier = Modifier.padding(padding),
+                themeColor = themeColor,
+                photoCount = pickedFolderImages.value.size,
+                favoriteCount = favoriteFiles.size,
+                folderCount = folderConfigs.size,
+                albumCount = albums.size,
+                isPro = isPro,
+                isScanning = isScanning.value,
+                scanPhotosFound = scanPhotosFound,
+                scanFoldersCompleted = scanFoldersCompleted,
+                scanTotalFolders = scanTotalFolders,
+                scanCurrentFolder = scanCurrentFolder,
+                activeFilterLabel = if (isPro) listOfNotNull(
+                    smartFilters.dateFilter.takeIf { it != ProDateFilter.ANY }?.label,
+                    smartFilters.favoriteFilter.takeIf { it != ProFavoriteFilter.ANY }?.label
+                ).joinToString(" · ") else "",
+                onSearchPhotos = { showFilenameSearch = true },
+                onStartRoulette = {
+                    android.util.Log.i(
+                        "PR_VIEWER",
+                        "START CLICK scanning=${isScanning.value} librarySize=${pickedFolderImages.value.size} oldDeckSize=${activeSessionList.size} isPlaying=$isPlaying"
+                    )
+                    if (
+                        !isScanning.value &&
+                        pickedFolderImages.value.isNotEmpty()
+                    ) {
+                        android.util.Log.i("PR_VIEWER", "START accepted; vibration BEGIN")
+                        triggerVibration(
+                            context,
+                            VibrationStyle.LONG
+                        )
+                        android.util.Log.i("PR_VIEWER", "vibration DONE; setting roulette mode flags")
+
+                        isFavoritesMode = false
+                        isAlbumMode = false
+                        android.util.Log.i("PR_VIEWER", "mode flags DONE; launching shuffle coroutine")
+
+                        val sourceImages = pickedFolderImages.value.toList()
+
+                        scope.launch {
+                            android.util.Log.i("PR_VIEWER", "shuffle coroutine ENTER")
+                            val (filteredSource, shuffledDeck) =
+                                withContext(Dispatchers.IO) {
+                                    android.util.Log.i(
+                                        "PR_VIEWER",
+                                        "shuffle START on ${Thread.currentThread().name}; sourceSize=${sourceImages.size}"
+                                    )
+
+                                    val filtered = if (isPro) applyProRouletteFilters(context, sourceImages, favoriteMappings.map { it.originalUri }.filter { it.isNotBlank() }.toSet(), smartFilters) else sourceImages
+                                    val result: List<Uri> = filtered.shuffled()
+
+                                    android.util.Log.i(
+                                        "PR_VIEWER",
+                                        "shuffle DONE on ${Thread.currentThread().name}; resultSize=${result.size}"
+                                    )
+
+                                    filtered to result
+                                }
+                            android.util.Log.i("PR_VIEWER", "shuffle returned to UI; size=${shuffledDeck.size}")
+                            if (shuffledDeck.isNotEmpty()) {
+                                android.util.Log.i("PR_VIEWER", "deck clear BEGIN oldSize=${activeSessionList.size}")
+                                activeSessionList.clear()
+                                activeSessionSource.clear()
+                                activeSessionSource.addAll(filteredSource)
+                                android.util.Log.i("PR_VIEWER", "deck clear DONE size=${activeSessionList.size}")
+                                android.util.Log.i("PR_VIEWER", "deck addAll BEGIN count=${shuffledDeck.size}")
+                                activeSessionList.addAll(shuffledDeck)
+                                android.util.Log.i("PR_VIEWER", "deck addAll DONE size=${activeSessionList.size}")
+                                currentIndex.intValue = 0
+                                android.util.Log.i("PR_VIEWER", "index set DONE; currentUri=${activeSessionList.getOrNull(currentIndex.intValue)}")
+                                android.util.Log.i("PR_VIEWER", "setting isPlaying=true BEGIN")
+                                isPlaying = true
+                                android.util.Log.i("PR_VIEWER", "setting isPlaying=true DONE value=$isPlaying")
+                            } else {
+                                android.util.Log.w("PR_VIEWER", "shuffle returned EMPTY deck")
+                            }
+                            android.util.Log.i("PR_VIEWER", "shuffle coroutine EXIT")
+                        }
+                    } else {
+                        android.util.Log.w(
+                            "PR_VIEWER",
+                            "START rejected scanning=${isScanning.value} librarySize=${pickedFolderImages.value.size}"
+                        )
+                    }
+                },
+                onOpenRouletteCollection = {
+                    triggerVibration(context)
+                    showRouletteCollectionPicker = true
+                },
+                onOpenSmartRoulette = {
+                    triggerVibration(context)
+                    if (isPro) showSmartRoulette = true else showProUpgrade = true
+                },
+                onOpenRouletteHistory = {
+                    triggerVibration(context)
+                    if (isPro) showRouletteHistory = true else showProUpgrade = true
+                },
+                onOpenAlbums = {
+                    triggerVibration(context)
+                    if (isPro) showAlbumsBrowser = true else showProUpgrade = true
+                },
+                onOpenFolders = {
+                    triggerVibration(context)
+                    showFoldersSheet = true
+                },
+                onOpenDuplicates = {
+                    triggerVibration(context)
+                    showDuplicatesSheet = true
+                },
+                onOpenOptions = {
+                    triggerVibration(context)
+                    showOptionsSheet = true
+                },
+                onOpenAboutSupport = {
+                    triggerVibration(context)
+                    showAboutSupport = true
+                },
+                onRefresh = {
+                    triggerVibration(context)
+
+                    scope.launch {
+                        scanAllFolders()
+                        refreshFavs(context) { updatedList ->
+                            favoriteFiles = updatedList
+                        }
+                    }
+                }
+            )
+
+            if (showFoldersSheet) {
+                LibraryFoldersSheet(
+                    folders = folderConfigs,
+                    isScanning = isScanning.value,
+                    photosFound = scanPhotosFound,
+                    currentFolderName = scanCurrentFolder,
+                    themeColor = themeColor,
+                    onDismiss = {
+                        showFoldersSheet = false
+                    },
+                    onAddFolder = {
+                        folderLauncher.launch(null)
+                    },
+                    onToggleSubfolders = { config, includeSubfolders ->
+                        folderConfigs = folderConfigs.map { current ->
+                            if (current == config) {
+                                current.copy(
+                                    includeSubfolders = includeSubfolders
+                                )
+                            } else {
+                                current
+                            }
+                        }
+
+                        saveFolders(context, folderConfigs)
+
+                        scope.launch {
+                            scanAllFolders()
+                        }
+                    },
+                    onRemoveFolder = { config ->
+                        runCatching {
+                            context.contentResolver
+                                .releasePersistableUriPermission(
+                                    config.uri,
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                )
+                        }.recoverCatching {
+                            // Older saved folders may only have a read grant.
+                            context.contentResolver
+                                .releasePersistableUriPermission(
+                                    config.uri,
+                                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                )
+                        }
+
+                        folderConfigs = folderConfigs.filterNot {
+                            it == config
+                        }
+
+                        saveFolders(context, folderConfigs)
+
+                        scope.launch {
+                            scanAllFolders()
+                        }
+                    },
+                    onRescan = {
+                        scope.launch {
+                            scanAllFolders()
+                            refreshFavs(context) { updatedList ->
+                                favoriteFiles = updatedList
+                            }
+                        }
+                    },
+                    onFixFavoritesMapping = {
+                        repairFavoriteLinks()
+                    },
+                    isFixingFavoritesMapping = isMigratingFavoriteLinks
+                )
+            }
+
+            if (showOptionsSheet) {
+                PicRouletteOptionsSheet(
+                    hapticFeedbackEnabled = hapticFeedbackEnabled,
+                    keepScreenAwakeEnabled = keepScreenAwakeEnabled,
+                    showPhotoCounterByDefault =
+                        showPhotoCounterByDefault,
+                    scanLibraryOnStart = scanLibraryOnStart,
+                    defaultPhotoDisplayMode =
+                        defaultPhotoDisplayMode,
+                    favoriteCount = favoriteFiles.size,
+                    favoriteFolderLocation = favoriteFolderLocation,
+                    isMovingFavorites = isMovingFavorites,
+                    isPro = isPro,
+                    themeColor = themeColor,
+                    onHapticFeedbackChanged = { enabled ->
+                        hapticFeedbackEnabled = enabled
+                        setHapticFeedbackEnabled(
+                            context = context,
+                            enabled = enabled
+                        )
+
+                        if (enabled) {
+                            triggerVibration(context)
+                        }
+                    },
+                    onKeepScreenAwakeChanged = { enabled ->
+                        keepScreenAwakeEnabled = enabled
+                        setKeepScreenAwakeEnabled(
+                            context = context,
+                            enabled = enabled
+                        )
+                    },
+                    onPhotoCounterDefaultChanged = { enabled ->
+                        showPhotoCounterByDefault = enabled
+                        setPhotoCounterDefaultEnabled(
+                            context = context,
+                            enabled = enabled
+                        )
+                    },
+                    onScanLibraryOnStartChanged = { enabled ->
+                        scanLibraryOnStart = enabled
+                        setScanLibraryOnStartEnabled(
+                            context = context,
+                            enabled = enabled
+                        )
+                    },
+                    onDefaultPhotoDisplayModeChanged = { mode ->
+                        defaultPhotoDisplayMode = mode
+                        setDefaultPhotoDisplayMode(
+                            context = context,
+                            mode = mode
+                        )
+                    },
+                    onOpenDuplicates = {
+                        showOptionsSheet = false
+                        showDuplicatesSheet = true
+                    },
+                    onOpenBackupRestore = {
+                        if (isPro) {
+                            showOptionsSheet = false
+                            showBackupRestore = true
+                        } else {
+                            showOptionsSheet = false
+                            showProUpgrade = true
+                        }
+                    },
+                    onChangeFavoriteFolder = {
+                        if (isPro) {
+                            showOptionsSheet = false
+                            favoriteFolderLauncher.launch(null)
+                        } else {
+                            showOptionsSheet = false
+                            showProUpgrade = true
+                        }
+                    },
+                    onUseDefaultFavoriteFolder = {
+                        if (isPro) {
+                            showOptionsSheet = false
+                            moveFavoritesTo(null)
+                        } else {
+                            showOptionsSheet = false
+                            showProUpgrade = true
+                        }
+                    },
+                    onShowTutorial = {
+                        showOptionsSheet = false
+                        showTutorial = true
+                    },
+                    onUpgradeToPro = {
+                        showOptionsSheet = false
+                        showProUpgrade = true
+                    },
+                    onDismiss = {
+                        showOptionsSheet = false
+                    }
+                )
+            }
+
+            if (showTutorial) {
+                PicRouletteTutorialSheet(
+                    themeColor = themeColor,
+                    onFinished = {
+                        setTutorialSeen(context)
+                        showTutorial = false
+                    }
+                )
+            }
+
+            if (isMovingFavorites) {
+                val migrationProgress = favoriteFolderMigrationProgress
+                AlertDialog(
+                    onDismissRequest = {},
+                    properties = DialogProperties(
+                        dismissOnBackPress = false,
+                        dismissOnClickOutside = false
+                    ),
+                    title = { Text("Moving PR_FAVS") },
+                    text = {
+                        Column {
+                            Text(
+                                migrationProgress?.status
+                                    ?: "Preparing Favorites folder…"
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            if (migrationProgress != null && migrationProgress.total > 0) {
+                                val fraction = (
+                                    migrationProgress.completed.toFloat() /
+                                        migrationProgress.total.toFloat()
+                                    ).coerceIn(0f, 1f)
+                                val percent = (fraction * 100f).toInt()
+                                val etaText = when {
+                                    migrationProgress.completed >=
+                                        migrationProgress.total ->
+                                        "Finishing…"
+
+                                    migrationProgress.completed < 3 ->
+                                        "Calculating time remaining…"
+
+                                    favoriteFolderMigrationStartedAt <= 0L ->
+                                        "Calculating time remaining…"
+
+                                    else -> {
+                                        val elapsedMillis =
+                                            (System.currentTimeMillis() -
+                                                favoriteFolderMigrationStartedAt)
+                                                .coerceAtLeast(0L)
+                                        val remainingItems =
+                                            migrationProgress.total -
+                                                migrationProgress.completed
+                                        val remainingMillis =
+                                            elapsedMillis * remainingItems /
+                                                migrationProgress.completed
+                                        formatFavoriteMoveEta(remainingMillis)
+                                    }
+                                }
+                                LinearProgressIndicator(
+                                    progress = { fraction },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    "${migrationProgress.completed} of " +
+                                        "${migrationProgress.total} favorites • " +
+                                        "$percent%"
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    etaText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.Gray
+                                )
+                            } else {
+                                LinearProgressIndicator(
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text(
+                                "Keep PicRoulette open until the move is complete.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                        }
+                    },
+                    confirmButton = {}
+                )
+            }
+
+            if (showBackupRestore) {
+                BackupRestoreSheet(
+                    favoriteCount = favoriteFiles.size,
+                    albumCount = albums.size,
+                    linkedFavoriteCount = favoriteMappings.count {
+                        it.originalUri.isNotBlank() &&
+                            it.favoriteUri.isNotBlank()
+                    },
+                    sourcePhotoCount = pickedFolderImages.value.size,
+                    isExporting = isExportingFavorites,
+                    isImporting = isImportingFavorites,
+                    isRepairing = isMigratingFavoriteLinks,
+                    repairProgress = favoriteRepairProgress,
+                    repairStatus = favoriteRepairStatus,
+                    isLibraryScanning = isScanning.value,
+                    themeColor = themeColor,
+                    onDismiss = {
+                        showBackupRestore = false
+                    },
+                    onExport = {
+                        if (
+                            (favoriteFiles.isNotEmpty() || albums.isNotEmpty()) &&
+                            !isExportingFavorites &&
+                            !isImportingFavorites &&
+                            !isMigratingFavoriteLinks
+                        ) {
+                            val timestamp =
+                                SimpleDateFormat(
+                                    "yyyyMMddHHmmss",
+                                    Locale.US
+                                ).format(Date())
+
+                            exportFavoritesZipLauncher.launch(
+                                "PicRoulette-Favorites-Backup-$timestamp.zip"
+                            )
+                        }
+                    },
+                    onImport = {
+                        if (
+                            !isImportingFavorites &&
+                            !isExportingFavorites &&
+                            !isMigratingFavoriteLinks
+                        ) {
+                            importFavoritesZipLauncher.launch(
+                                arrayOf(
+                                    "application/zip",
+                                    "application/x-zip-compressed",
+                                    "application/octet-stream"
+                                )
+                            )
+                        }
+                    },
+                    onRepair = repairFavoriteLinks
+                )
+            }
+
+            if (showAboutSupport) {
+                AboutSupportSheet(
+                    themeColor = themeColor,
+                    onDismiss = {
+                        showAboutSupport = false
+                    }
+                )
+            }
+
+        } else {
+            // --- PLAYBACK UI ---
+            LaunchedEffect(currentViewerUri, activeSessionList.size, currentIndex.intValue) {
+                android.util.Log.i(
+                    "PR_VIEWER",
+                    "PLAYBACK BRANCH entered deckSize=${activeSessionList.size} index=${currentIndex.intValue} uri=$currentViewerUri"
+                )
+            }
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black)
+                    .onGloballyPositioned { containerSize = it.size }
+                    .transformable(state = transformState)
+                    .combinedClickable(
+                        onClick = {
+                            if (activeSessionList.isNotEmpty()) {
+                                triggerVibration(
+                                    context,
+                                    VibrationStyle.TICK
+                                ); if (currentIndex.intValue >= activeSessionList.size - 1) {
+                                    // Every Roulette deck contains each eligible photo exactly once.
+                                    // After the deck is exhausted, reshuffle it for the next cycle while
+                                    // avoiding the just-shown photo at the new cycle boundary.
+                                    reshuffleDeckAvoidingBoundaryRepeat(activeSessionList)
+                                    currentIndex.intValue = 0
+                                    showShuffleToast = true
+                                } else {
+                                    currentIndex.intValue += 1
+                                }
+                            }
+                        },
+                        onLongClick = {
+                            triggerVibration(context, VibrationStyle.LONG); uiVisible = !uiVisible
+                        })
+            ) {
+                val currentUri = currentViewerUri
+                LaunchedEffect(currentUri) {
+                    android.util.Log.i("PR_VIEWER", "VIEWER currentUri changed to $currentUri")
+                    if (isPro && currentUri != null) {
+                        recordRouletteView(context, currentUri)
+                        val folderSource = favoriteMappings.firstOrNull {
+                            !it.isDeleted && it.favoriteUri == currentUri.toString()
+                        }?.originalUri?.takeIf { it.isNotBlank() }?.let(Uri::parse) ?: currentUri
+                        recordRecentFolderForPhoto(context, folderSource)
+                        historyGeneration++
+                    }
+                }
+                if (currentUri != null) {
+
+                    val currentFileDetails =
+                        activePhotoMetadata?.fileDetails
+                            ?: PhotoFileDetails(
+                                displayName = currentUri.lastPathSegment
+                                    ?: "Photo",
+                                sizeBytes = null
+                            )
+
+                    val currentFileName = currentFileDetails.displayName
+
+                    val currentFavoriteMapping = remember(
+                        currentUri,
+                        isFavoritesMode,
+                        favoriteMappings
+                    ) {
+                        if (isFavoritesMode) {
+                            favoriteMappings.find {
+                                it.favoriteUri == currentUri.toString()
+                            }
+                        } else {
+                            null
+                        }
+                    }
+
+                    val displayFileName = remember(
+                        currentUri,
+                        currentFileName,
+                        isFavoritesMode,
+                        currentFavoriteMapping
+                    ) {
+                        if (isFavoritesMode) {
+                            currentFavoriteMapping?.originalFileName
+                                ?: currentFileName
+                        } else {
+                            currentFileName
+                        }
+                    }
+
+                    /*
+                     * Every item in Favorites Viewer is physically in the
+                     * favorites folder, so it starts with a filled heart even
+                     * if an older/imported favorite has no mapping record.
+                     * The only empty-heart state there is the temporary
+                     * replacement state requested by the user.
+                     */
+                    // Album photos can have a new content URI after a library rescan.
+                    // Resolve the durable catalog ID off the UI thread so an existing
+                    // favorite keeps its filled heart even when its saved URI differs.
+                    var albumFavoritePhotoId by remember(currentUri) { mutableStateOf("") }
+                    LaunchedEffect(currentUri, isFavoritesMode) {
+                        albumFavoritePhotoId = ""
+                        if (!isFavoritesMode) {
+                            albumFavoritePhotoId = withContext(Dispatchers.IO) {
+                                PicRouletteDatabase.get(context).albumDao()
+                                    .photoByCurrentUri(currentUri.toString())?.id.orEmpty()
+                            }
+                        }
+                    }
+
+                    // Album membership is stored against a durable catalog photo ID.
+                    // Resolve it when the displayed photo or albums change, including
+                    // Favorites Roulette, rather than relying on URI string equality.
+                    var catalogAlbumMember by remember(currentUri) { mutableStateOf(false) }
+                    LaunchedEffect(currentUri, albums, favoriteMappings, isAlbumMode) {
+                        catalogAlbumMember = isAlbumMode
+                        if (!isAlbumMode) {
+                            catalogAlbumMember = withContext(Dispatchers.IO) {
+                                isPhotoInAnyAlbum(context, currentUri)
+                            }
+                        }
+                    }
+
+                    val isHeartFilled = remember(
+                        currentUri,
+                        isFavoritesMode,
+                        favoriteMappings,
+                        favoriteFiles,
+                        pendingFavoriteReplacementUri,
+                        albumFavoritePhotoId
+                    ) {
+                        if (isFavoritesMode) {
+                            pendingFavoriteReplacementUri != currentUri
+                        } else {
+                            /*
+                             * Album Roulette may resolve an unavailable original through the
+                             * durable favorite-copy mapping stored on disk. Keep the viewer's
+                             * heart state in sync with that same source of truth instead of
+                             * relying only on the in-memory mapping snapshot.
+                             */
+                            // Never parse SharedPreferences or perform storage work from
+                            // composition. favoriteMappings is refreshed from the durable store
+                            // by the existing favorites refresh path.
+                            // Favorite state must belong to THIS logical library item. Exact
+                            // favorite-copy URIs are still required, but the saved original is
+                            // allowed to match by document identity because Android can expose
+                            // the same source photo through a different URI representation.
+                            findActiveFavoriteMapping(
+                                mappings = favoriteMappings,
+                                photoUri = currentUri.toString()
+                            ) { savedOriginalUri, currentPhotoUri ->
+                                sameImage(
+                                    Uri.parse(savedOriginalUri),
+                                    Uri.parse(currentPhotoUri)
+                                )
+                            } != null || (
+                                albumFavoritePhotoId.isNotBlank() &&
+                                    favoriteMappings.any { mapping ->
+                                        !mapping.isDeleted &&
+                                            mapping.favoriteUri.isNotBlank() &&
+                                            mapping.photoId == albumFavoritePhotoId
+                                    }
+                            )
+                        }
+                    }
+
+                    // In regular Roulette (including album Roulette), display the saved
+                    // favorite copy when one exists. Keep currentUri unchanged: it is
+                    // the original session identity used for navigation, hearts, albums,
+                    // recent history, and other photo operations.
+                    // Resolve the displayed copy when entering a photo, not when
+                    // Favorites changes while that same photo is onscreen. Saving a
+                    // new crop should leave the currently zoomed original untouched;
+                    // the saved crop is shown on the next visit to this photo.
+                    val rouletteDisplayUri = remember(
+                        currentUri,
+                        isFavoritesMode,
+                        albumFavoritePhotoId
+                    ) {
+                        if (isFavoritesMode) {
+                            currentUri
+                        } else {
+                            val mapping = findActiveFavoriteMapping(
+                                mappings = favoriteMappings,
+                                photoUri = currentUri.toString()
+                            ) { savedOriginalUri, currentPhotoUri ->
+                                sameImage(Uri.parse(savedOriginalUri), Uri.parse(currentPhotoUri))
+                            } ?: favoriteMappings.firstOrNull { mapping ->
+                                !mapping.isDeleted &&
+                                    mapping.favoriteUri.isNotBlank() &&
+                                    albumFavoritePhotoId.isNotBlank() &&
+                                    mapping.photoId == albumFavoritePhotoId
+                            }
+                            mapping?.favoriteUri?.takeIf { it.isNotBlank() }
+                                ?.let(Uri::parse) ?: currentUri
+                        }
+                    }
+
+                    // The favorite is already cropped using the original's current zoom
+                    // and pan. When the displayed file changes, start the newly rendered
+                    // image at its natural fitted size; otherwise the original transform
+                    // would be applied a second time to the cropped favorite.
+                    LaunchedEffect(rouletteDisplayUri) {
+                        scale.floatValue = 1f
+                        offset.value = Offset.Zero
+                    }
+
+                    /*
+                     * Favorites Roulette uses a two-phase unfavorite operation. The first
+                     * heart tap only arms removal, keeping the old favorite file and mapping
+                     * intact so the user can safely zoom/pan and favorite it again. Once the
+                     * user navigates away, the pending removal is committed.
+                     */
+                    LaunchedEffect(currentUri, isFavoritesMode) {
+                        unavailablePhotoUri = null
+                        missingPhotoRecoveryAttemptedUri = null
+
+                        val pendingUri = pendingFavoriteReplacementUri
+                        if (
+                            isFavoritesMode &&
+                            pendingUri != null &&
+                            pendingUri != currentUri
+                        ) {
+                            commitPendingFavoriteRemoval(pendingUri)
+                        } else if (!isFavoritesMode) {
+                            pendingFavoriteReplacementUri = null
+                        }
+                    }
+
+                    /*
+                     * Each time a new normal-mode photo appears, briefly show
+                     * the filled heart when that original photo is favorited.
+                     * Changing photos automatically cancels the previous delay.
+                     */
+                    LaunchedEffect(
+                        currentUri,
+                        isHeartFilled,
+                        isFavoritesMode
+                    ) {
+                        showFavoriteIndicator = false
+
+                        if (
+                            !isFavoritesMode &&
+                            isHeartFilled
+                        ) {
+                            showFavoriteIndicator = true
+                            delay(2000)
+                            showFavoriteIndicator = false
+                        }
+                    }
+
+                    /*
+                     * Keep only one decoded copy of the current photo in memory.
+                     * The old blurred full-screen background loaded currentUri a second time,
+                     * which could require two full-resolution bitmaps plus a blur render target.
+                     * On large camera photos that can push the process over its graphics/memory
+                     * budget and Android kills it without a Java FATAL EXCEPTION.
+                     */
+                    val viewportGeometry =
+                        // Metadata belongs to the original, whose aspect ratio can
+                        // differ from a cropped favorite. Let Coil fit the favorite
+                        // naturally instead of applying the original's crop geometry.
+                        activePhotoMetadata?.takeIf { rouletteDisplayUri == currentUri }
+                            ?.let { metadata ->
+                            val width = metadata.width
+                            val height = metadata.height
+                            if (width != null && height != null) {
+                                calculatePhotoViewportGeometry(
+                                    imageWidth = width,
+                                    imageHeight = height,
+                                    containerSize = containerSize,
+                                    userZoom = scale.floatValue,
+                                    displayMode = currentPhotoDisplayMode
+                                )
+                            } else {
+                                null
+                            }
+                        }
+
+                    val renderedScale =
+                        (viewportGeometry?.displayModeMultiplier ?: 1f) *
+                            scale.floatValue
+
+                    AsyncImage(
+                        model = rouletteDisplayUri,
+                        contentDescription = "Current photo",
+                        modifier = Modifier.fillMaxSize().graphicsLayer(
+                            scaleX = renderedScale,
+                            scaleY = renderedScale,
+                            translationX = offset.value.x,
+                            translationY = offset.value.y
+                        ),
+                        contentScale = ContentScale.Fit,
+                        onSuccess = {
+                            if (unavailablePhotoUri == currentUri) {
+                                unavailablePhotoUri = null
+                            }
+                            if (
+                                missingPhotoRecoveryAttemptedUri ==
+                                currentUri.toString()
+                            ) {
+                                missingPhotoRecoveryAttemptedUri = null
+                            }
+                        },
+                        onError = {
+                            val failedUriString = currentUri.toString()
+
+                            if (
+                                missingPhotoRecoveryAttemptedUri !=
+                                failedUriString
+                            ) {
+                                missingPhotoRecoveryAttemptedUri =
+                                    failedUriString
+                                unavailablePhotoUri = currentUri
+
+                                if (isFavoritesMode) {
+                                    refreshFavs(context) { updatedFavorites ->
+                                        favoriteFiles = updatedFavorites
+
+                                        if (
+                                            activeSessionList.any {
+                                                it == currentUri
+                                            }
+                                        ) {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar(
+                                                    "Photo couldn't be loaded right now. You can skip it and try again later."
+                                                )
+                                            }
+                                        } else {
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar(
+                                                    "Photo is no longer available and was removed from this session."
+                                                )
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    scope.launch {
+                                        scanAllFolders()
+
+                                        if (
+                                            activeSessionList.any {
+                                                it == currentUri
+                                            }
+                                        ) {
+                                            snackbarHostState.showSnackbar(
+                                                "Photo couldn't be loaded right now. You can skip it and try again later."
+                                            )
+                                        } else {
+                                            snackbarHostState.showSnackbar(
+                                                "Photo is no longer available and was removed from this session."
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    )
+
+                    if (unavailablePhotoUri == currentUri) {
+                        Surface(
+                            color = Color.Black.copy(alpha = 0.72f),
+                            shape = RoundedCornerShape(20.dp),
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .padding(32.dp)
+                                .zIndex(1f)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    "Photo couldn't be loaded",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 18.sp
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    "PicRoulette is checking whether the file was moved or deleted.",
+                                    color = Color.LightGray,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                    }
+
+                    /*
+                     * Heart-only notification. This is separate from the full
+                     * viewer menu and is not clickable.
+                     */
+                    AnimatedVisibility(
+                        visible =
+                            showFavoriteIndicator &&
+                            !uiVisible &&
+                            !isFavoritesMode &&
+                            isHeartFilled,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 48.dp)
+                            .zIndex(2f),
+                        enter = fadeIn() + scaleIn(),
+                        exit = fadeOut() + scaleOut()
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = Color.Black.copy(alpha = 0.55f),
+                            shadowElevation = 8.dp,
+                            modifier = Modifier.size(64.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Favorite,
+                                    contentDescription =
+                                        "Already in Favorites",
+                                    tint = Color.Red,
+                                    modifier = Modifier.size(40.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (showCountSetting) { // Now shows regardless of uiVisible state
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(start = 20.dp, bottom = 48.dp)
+                                .background(Color.Black.copy(0.4f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "${currentIndex.intValue + 1} / ${activeSessionList.size}",
+                                color = Color.White.copy(0.8f),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+
+                    AnimatedVisibility(
+                        visible = showShuffleToast,
+                        modifier = Modifier.align(Alignment.TopCenter).padding(top = 80.dp)
+                            .zIndex(1f),
+                        enter = fadeIn() + slideInVertically(),
+                        exit = fadeOut() + slideOutVertically()
+                    ) {
+                        Surface(
+                            color = themeColor,
+                            shape = RoundedCornerShape(16.dp),
+                            shadowElevation = 8.dp
+                        ) {
+                            Text(
+                                text = "Reshuffled Whole Deck!",
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                                color = Color.Black,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+
+                    AnimatedVisibility(
+                        visible = uiVisible,
+                        enter = fadeIn() + slideInVertically(),
+                        exit = fadeOut() + slideOutVertically()
+                    ) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            // ... your button Row starts here
+
+                            AnimatedVisibility(
+                                visible = uiVisible,
+                                enter = fadeIn() + slideInVertically(),
+                                exit = fadeOut() + slideOutVertically()
+                            ) {
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth()
+                                            .padding(horizontal = 20.dp, vertical = 40.dp)
+                                            .align(Alignment.TopCenter),
+                                        Arrangement.SpaceBetween,
+                                        Alignment.CenterVertically
+                                    ) {
+                                        Button(onClick = { requestViewerExit() }) { Text("Exit") }
+                                        IconButton(
+                                            onClick = { showMetadata = !showMetadata },
+                                            modifier = Modifier.size(64.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.Info,
+                                                "Info",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(48.dp)
+                                            )
+                                        }
+                                        key(currentUri, isHeartFilled) {
+                                            val hScale = remember { Animatable(1f) }
+                                            IconButton(
+                                                onClick = {
+                                                    if (isReplacingFavorite) {
+                                                        return@IconButton
+                                                    }
+
+                                                    triggerVibration(
+                                                        context,
+                                                        VibrationStyle.HEARTBEAT
+                                                    )
+
+                                                    /*
+                                                     * In Favorites Viewer, the heart is an edit/replace
+                                                     * toggle rather than a delete button. First tap only
+                                                     * arms the current favorite. Second tap saves the
+                                                     * current zoom/pan as a replacement.
+                                                     */
+                                                    scope.launch {
+                                                        if (isFavoritesMode) {
+                                                            isReplacingFavorite = true
+
+                                                            try {
+                                                                val currentUriString = currentUri.toString()
+                                                                val existingMapping = favoriteMappings.find { candidate ->
+                                                                    !candidate.isDeleted &&
+                                                                        candidate.favoriteUri.isNotBlank() &&
+                                                                        (candidate.favoriteUri == currentUriString ||
+                                                                            runCatching {
+                                                                                sameImage(
+                                                                                    Uri.parse(candidate.favoriteUri),
+                                                                                    currentUri
+                                                                                )
+                                                                            }.getOrDefault(false))
+                                                                }
+
+                                                                if (existingMapping == null) {
+                                                                    snackbarHostState.showSnackbar(
+                                                                        "This favorite has no source link, so it could not be changed safely."
+                                                                    )
+                                                                    pendingFavoriteReplacementUri = null
+                                                                    return@launch
+                                                                }
+
+                                                                if (isHeartFilled) {
+                                                                    /*
+                                                                     * Phase 1 of unfavorite: do not delete anything yet.
+                                                                     * Keeping the old favorite file and mapping alive makes
+                                                                     * re-favoriting after zoom/pan completely reversible.
+                                                                     * Navigation commits the removal in the effect above.
+                                                                     */
+                                                                    pendingFavoriteReplacementUri = currentUri
+                                                                    unavailablePhotoUri = null
+                                                                    missingPhotoRecoveryAttemptedUri = null
+                                                                    scale.floatValue = 1f
+                                                                    offset.value = Offset.Zero
+                                                                    return@launch
+                                                                }
+
+                                                                /*
+                                                                 * Phase 2: the user changed their mind and favorited the
+                                                                 * pending item again. Write the replacement FIRST from the
+                                                                 * still-readable old favorite. Only after the new mapping is
+                                                                 * persisted do we remove the old favorite file.
+                                                                 */
+                                                                hScale.animateTo(1.4f, spring())
+                                                                hScale.animateTo(1f, spring())
+
+                                                                val newFavoriteId = newFavoriteId()
+                                                                val replacementUri = saveToFavoritesFolder(
+                                                                    context = context,
+                                                                    sourceUri = currentUri,
+                                                                    fileName = existingMapping.originalFileName
+                                                                        .ifBlank { displayFileName },
+                                                                    favoriteId = newFavoriteId,
+                                                                    scale = scale.floatValue,
+                                                                    offset = offset.value,
+                                                                    containerSize = containerSize,
+                                                                    displayMode = currentPhotoDisplayMode
+                                                                )
+
+                                                                if (replacementUri == null) {
+                                                                    pendingFavoriteReplacementUri = null
+                                                                    snackbarHostState.showSnackbar(
+                                                                        "The favorite could not be updated. Your original favorite was kept."
+                                                                    )
+                                                                    return@launch
+                                                                }
+
+                                                                val mappingsBeforeReplacement =
+                                                                    favoriteMappings.toMutableList()
+                                                                val replacementMapping = existingMapping.copy(
+                                                                    favoriteUri = replacementUri.toString(),
+                                                                    favoriteId = newFavoriteId,
+                                                                    favoriteFileName = displayNameForUri(
+                                                                        context,
+                                                                        replacementUri
+                                                                    ),
+                                                                    dateAdded = System.currentTimeMillis(),
+                                                                    isDeleted = false
+                                                                )
+                                                                val updatedMappings = favoriteMappings.map { candidate ->
+                                                                    if (candidate == existingMapping ||
+                                                                        (existingMapping.favoriteId.isNotBlank() &&
+                                                                            candidate.favoriteId == existingMapping.favoriteId)
+                                                                    ) {
+                                                                        replacementMapping
+                                                                    } else {
+                                                                        candidate
+                                                                    }
+                                                                }.toMutableList()
+
+                                                                val mappingSaved = saveFavoriteMappings(
+                                                                    context = context,
+                                                                    mappings = updatedMappings,
+                                                                    synchronous = true
+                                                                )
+
+                                                                if (!mappingSaved) {
+                                                                    withContext(Dispatchers.IO) {
+                                                                        deleteFavorite(context, replacementUri)
+                                                                    }
+                                                                    pendingFavoriteReplacementUri = null
+                                                                    snackbarHostState.showSnackbar(
+                                                                        "The favorite could not be updated. Your original favorite was kept."
+                                                                    )
+                                                                    return@launch
+                                                                }
+
+                                                                favoriteMappings = updatedMappings
+
+                                                                val oldFavoriteCatalogId = resolveCatalogPhotoId(
+                                                                    context,
+                                                                    currentUri
+                                                                )
+                                                                val newFavoriteCatalogId = resolveCatalogPhotoId(
+                                                                    context,
+                                                                    replacementUri
+                                                                )
+
+                                                                val oldFavoriteDeleted = withContext(Dispatchers.IO) {
+                                                                    deleteFavorite(
+                                                                        context,
+                                                                        Uri.parse(existingMapping.favoriteUri)
+                                                                    )
+                                                                }
+
+                                                                if (!oldFavoriteDeleted) {
+                                                                    val rolledBack = saveFavoriteMappings(
+                                                                        context = context,
+                                                                        mappings = mappingsBeforeReplacement,
+                                                                        synchronous = true
+                                                                    )
+
+                                                                    if (rolledBack) {
+                                                                        favoriteMappings = mappingsBeforeReplacement
+                                                                        withContext(Dispatchers.IO) {
+                                                                            deleteFavorite(context, replacementUri)
+                                                                        }
+                                                                        pendingFavoriteReplacementUri = null
+                                                                        snackbarHostState.showSnackbar(
+                                                                            "The favorite could not be updated. Your original favorite was kept."
+                                                                        )
+                                                                        refreshFavs(context) { favoriteFiles = it }
+                                                                        return@launch
+                                                                    }
+
+                                                                    snackbarHostState.showSnackbar(
+                                                                        "The updated favorite was saved, but the old copy could not be cleaned up."
+                                                                    )
+                                                                } else {
+                                                                    if (
+                                                                        oldFavoriteCatalogId.isNotBlank() &&
+                                                                        newFavoriteCatalogId.isNotBlank() &&
+                                                                        oldFavoriteCatalogId != newFavoriteCatalogId
+                                                                    ) {
+                                                                        moveAlbumMembershipsToPhoto(
+                                                                            context = context,
+                                                                            fromPhotoId = oldFavoriteCatalogId,
+                                                                            toPhotoId = newFavoriteCatalogId
+                                                                        )
+                                                                    }
+                                                                    relinkFavoriteAlbumMembershipsToOriginals(
+                                                                        context = context,
+                                                                        mappings = updatedMappings
+                                                                    )
+                                                                }
+
+                                                                pendingFavoriteReplacementUri = null
+                                                                if (currentIndex.intValue in activeSessionList.indices) {
+                                                                    activeSessionList[currentIndex.intValue] = replacementUri
+                                                                }
+                                                                scale.floatValue = 1f
+                                                                offset.value = Offset.Zero
+                                                                refreshFavs(context) { favoriteFiles = it }
+                                                            } finally {
+                                                                isReplacingFavorite = false
+                                                            }
+
+                                                            return@launch
+                                                        }
+
+                                                        /*
+                                                         * Normal Roulette Viewer keeps the traditional
+                                                         * add/remove favorite toggle.
+                                                         */
+                                                        if (isHeartFilled) {
+                                                            // Use the same lookup rule as the heart state so a photo whose
+                                                            // source URI changed can still be unfavorited correctly. The
+                                                            // identity fallback applies only to the original, never to a
+                                                            // stale favorite-copy URI.
+                                                            val currentUriString = currentUri.toString()
+                                                            val mapping =
+                                                                findActiveFavoriteMapping(
+                                                                    mappings = favoriteMappings,
+                                                                    photoUri = currentUriString
+                                                                ) { savedOriginalUri, currentPhotoUri ->
+                                                                    sameImage(
+                                                                        Uri.parse(savedOriginalUri),
+                                                                        Uri.parse(currentPhotoUri)
+                                                                    )
+                                                                }
+
+                                                            mapping?.let { mapToDelete ->
+                                                                val favoriteDeleted =
+                                                                    if (mapToDelete.favoriteUri.isBlank()) {
+                                                                        true
+                                                                    } else {
+                                                                        withContext(Dispatchers.IO) {
+                                                                            deleteFavorite(
+                                                                                context,
+                                                                                Uri.parse(
+                                                                                    mapToDelete.favoriteUri
+                                                                                )
+                                                                            )
+                                                                        }
+                                                                    }
+
+                                                                if (!favoriteDeleted) {
+                                                                    snackbarHostState.showSnackbar(
+                                                                        "The favorite could not be removed."
+                                                                    )
+                                                                    return@launch
+                                                                }
+
+                                                                favoriteMappings =
+                                                                    favoriteMappings.filter {
+                                                                        it.originalUri !=
+                                                                            mapToDelete.originalUri
+                                                                    }.toMutableList()
+                                                                saveFavoriteMappings(
+                                                                    context,
+                                                                    favoriteMappings
+                                                                )
+
+                                                                if (isAlbumMode) {
+                                                                    val originalUri = Uri.parse(
+                                                                        mapToDelete.originalUri
+                                                                    )
+                                                                    activeSessionList.indices.forEach { index ->
+                                                                        val sessionUri = activeSessionList[index]
+                                                                        if (
+                                                                            sessionUri == currentUri ||
+                                                                            runCatching {
+                                                                                sameImage(sessionUri, currentUri)
+                                                                            }.getOrDefault(false)
+                                                                        ) {
+                                                                            activeSessionList[index] = originalUri
+                                                                        }
+                                                                    }
+                                                                }
+
+                                                                refreshFavs(context) {
+                                                                    favoriteFiles = it
+                                                                }
+                                                            }
+                                                        } else {
+                                                            hScale.animateTo(1.4f, spring())
+                                                            hScale.animateTo(1f, spring())
+
+                                                            val sourceUri = currentUri
+                                                            val originalRelativePath =
+                                                                getOriginalRelativePath(sourceUri)
+
+                                                            val originalSha256 =
+                                                                calculateOriginalSha256(
+                                                                    context = context,
+                                                                    uri = sourceUri
+                                                                )
+                                                            val photoId = resolveCatalogPhotoId(context, sourceUri)
+                                                            val favoriteId = newFavoriteId()
+                                                            val favUri =
+                                                                saveToFavoritesFolder(
+                                                                    context = context,
+                                                                    sourceUri = sourceUri,
+                                                                    fileName = displayFileName,
+                                                                    favoriteId = favoriteId,
+                                                                    scale = scale.floatValue,
+                                                                    offset = offset.value,
+                                                                    containerSize = containerSize,
+                                                                    displayMode =
+                                                                        currentPhotoDisplayMode
+                                                                )
+
+                                                            if (favUri != null) {
+                                                                val existingIndex =
+                                                                    favoriteMappings.indexOfFirst {
+                                                                        sameImage(
+                                                                            Uri.parse(it.originalUri),
+                                                                            sourceUri
+                                                                        )
+                                                                    }
+                                                                val updated =
+                                                                    favoriteMappings.toMutableList()
+
+                                                                if (existingIndex >= 0) {
+                                                                    updated[existingIndex] =
+                                                                        updated[existingIndex].copy(
+                                                                            originalUri =
+                                                                                sourceUri.toString(),
+                                                                            favoriteUri =
+                                                                                favUri.toString(),
+                                                                            originalFileName =
+                                                                                displayFileName,
+                                                                            photoId = photoId,
+                                                                            favoriteId = favoriteId,
+                                                                            favoriteFileName = displayNameForUri(context, favUri),
+                                                                            originalRelativePath =
+                                                                                originalRelativePath,
+                                                                            originalSha256 =
+                                                                                originalSha256,
+                                                                            dateAdded =
+                                                                                System.currentTimeMillis(),
+                                                                            isDeleted = false
+                                                                        )
+                                                                } else {
+                                                                    updated.add(
+                                                                        FavoriteMapping(
+                                                                            originalUri =
+                                                                                sourceUri.toString(),
+                                                                            favoriteUri =
+                                                                                favUri.toString(),
+                                                                            originalFileName =
+                                                                                displayFileName,
+                                                                            photoId = photoId,
+                                                                            favoriteId = favoriteId,
+                                                                            favoriteFileName = displayNameForUri(context, favUri),
+                                                                            originalRelativePath =
+                                                                                originalRelativePath,
+                                                                            originalSha256 =
+                                                                                originalSha256,
+                                                                            dateAdded =
+                                                                                System.currentTimeMillis()
+                                                                        )
+                                                                    )
+                                                                }
+                                                                favoriteMappings = updated
+                                                                saveFavoriteMappings(
+                                                                    context,
+                                                                    favoriteMappings
+                                                                )
+
+                                                                refreshFavs(context) {
+                                                                    favoriteFiles = it
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                modifier = Modifier.background(
+                                                    Color.Black.copy(0.5f),
+                                                    CircleShape
+                                                ).size(56.dp).scale(hScale.value)
+                                            ) {
+                                                Icon(
+                                                    if (isHeartFilled) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                                    null,
+                                                    tint = Color.Red,
+                                                    modifier = Modifier.size(36.dp)
+                                                )
+                                            }
+                                        }
+                                        Button(onClick = { if (currentIndex.intValue > 0) currentIndex.intValue -= 1 }) {
+                                            Text(
+                                                "Back"
+                                            )
+                                        }
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            triggerVibration(context, VibrationStyle.TICK)
+                                            if (isPro) showAddToAlbums = true else showProUpgrade = true
+                                        },
+                                        modifier = Modifier
+                                            .align(Alignment.BottomCenter)
+                                            .padding(bottom = 24.dp)
+                                            .size(64.dp)
+                                            .background(Color.Black.copy(alpha = 0.68f), CircleShape)
+                                    ) {
+                                        val inAnyAlbum = catalogAlbumMember
+                                        Icon(
+                                            imageVector = Icons.Rounded.PhotoAlbum,
+                                            contentDescription = if (inAnyAlbum) "In an album" else "Albums",
+                                            tint = if (inAnyAlbum) Color.Yellow else Color.White,
+                                            modifier = Modifier.size(34.dp)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = {
+                                            showCountSetting = !showCountSetting; triggerVibration(
+                                            context
+                                        )
+                                        },
+                                        modifier = Modifier.align(Alignment.BottomStart)
+                                            .padding(24.dp)
+                                            .background(Color.Black.copy(0.4f), CircleShape)
+                                    ) {
+                                        Icon(
+                                            if (showCountSetting) Icons.Rounded.Pin else Icons.Rounded.PinDrop,
+                                            "Toggle Count",
+                                            tint = if (showCountSetting) themeColor else Color.White
+                                        )
+                                    }
+                                    if (!isFavoritesMode) {
+                                        IconButton(
+                                            onClick = {
+                                                triggerVibration(
+                                                    context,
+                                                    VibrationStyle.LONG
+                                                ); showDeleteDialog = true
+                                            },
+                                            modifier = Modifier.align(Alignment.BottomEnd)
+                                                .padding(24.dp).size(64.dp)
+                                                .background(Color.Red.copy(0.2f), CircleShape)
+                                        ) {
+                                            Icon(
+                                                Icons.Rounded.DeleteOutline,
+                                                "Delete",
+                                                tint = Color.Red,
+                                                modifier = Modifier.size(32.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            AnimatedVisibility(
+                                visible = showMetadata,
+                                enter = fadeIn() + scaleIn(),
+                                exit = fadeOut() + scaleOut()
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(Color.Black.copy(0.6f))
+                                        .clickable { showMetadata = false },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    val sizeText =
+                                        currentFileDetails.sizeBytes?.let { bytes ->
+                                            if (bytes >= 1024L * 1024L) {
+                                                "%.1f MB".format(
+                                                    Locale.US,
+                                                    bytes / 1024.0 / 1024.0
+                                                )
+                                            } else {
+                                                "${bytes / 1024L} KB"
+                                            }
+                                        } ?: "Unknown"
+
+                                    Surface(
+                                        color = Color(0xFF1A1A1A),
+                                        shape = RoundedCornerShape(24.dp),
+                                        modifier = Modifier
+                                            .padding(24.dp)
+                                            .fillMaxWidth()
+                                            .heightIn(max = 620.dp)
+                                            .clickable { }
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .padding(24.dp)
+                                                .verticalScroll(
+                                                    rememberScrollState()
+                                                )
+                                        ) {
+                                            Text(
+                                                "Photo Metadata",
+                                                style =
+                                                    MaterialTheme.typography
+                                                        .headlineSmall,
+                                                color = themeColor
+                                            )
+
+                                            Spacer(Modifier.height(16.dp))
+
+                                            MetadataRow(
+                                                "Filename",
+                                                currentFileDetails.displayName
+                                            )
+                                            MetadataRow("Size", sizeText)
+                                            MetadataRow(
+                                                "Resolution",
+                                                if (
+                                                    activePhotoMetadata?.width != null &&
+                                                    activePhotoMetadata?.height != null
+                                                ) {
+                                                    "${activePhotoMetadata?.width} x " +
+                                                        "${activePhotoMetadata?.height} px"
+                                                } else {
+                                                    "Unknown"
+                                                }
+                                            )
+                                            MetadataRow(
+                                                "URI Path",
+                                                currentUri.path ?: "N/A"
+                                            )
+
+                                            if (isFavoritesMode) {
+                                                MetadataRow(
+                                                    "Original Photo",
+                                                    when {
+                                                        currentFavoriteMapping?.isDeleted == true ->
+                                                            "Deleted"
+                                                        currentFavoriteMapping != null ->
+                                                            currentFavoriteMapping.originalFileName
+                                                        else ->
+                                                            "Link unavailable"
+                                                    }
+                                                )
+                                            }
+
+                                            Spacer(Modifier.height(24.dp))
+
+                                            Button(
+                                                onClick = {
+                                                    renameBaseName =
+                                                        splitFileName(
+                                                            currentFileDetails
+                                                                .displayName
+                                                        ).stem
+                                                    renameErrorMessage = null
+                                                    showRenameDialog = true
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text("Rename File")
+                                            }
+
+                                            Spacer(Modifier.height(10.dp))
+
+                                            TextButton(
+                                                onClick = {
+                                                    showMetadata = false
+                                                },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Text("Close")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (showRenameDialog) {
+                                val currentNameParts =
+                                    splitFileName(
+                                        currentFileDetails.displayName
+                                    )
+
+                                AlertDialog(
+                                    onDismissRequest = {
+                                        if (!isRenaming) {
+                                            showRenameDialog = false
+                                            renameErrorMessage = null
+                                        }
+                                    },
+                                    title = { Text("Rename File") },
+                                    text = {
+                                        Column {
+                                            Text(
+                                                "Enter a new name. The image " +
+                                                    "type will stay the same."
+                                            )
+
+                                            Spacer(Modifier.height(14.dp))
+
+                                            OutlinedTextField(
+                                                value = renameBaseName,
+                                                onValueChange = {
+                                                    renameBaseName = it
+                                                    renameErrorMessage = null
+                                                },
+                                                label = { Text("Filename") },
+                                                singleLine = true,
+                                                enabled = !isRenaming,
+                                                modifier = Modifier.fillMaxWidth()
+                                            )
+
+                                            if (
+                                                currentNameParts.extension
+                                                    .isNotEmpty()
+                                            ) {
+                                                Spacer(Modifier.height(6.dp))
+                                                Text(
+                                                    text =
+                                                        "File type: " +
+                                                            currentNameParts
+                                                                .extension,
+                                                    color = Color.Gray,
+                                                    fontSize = 13.sp
+                                                )
+                                            }
+
+                                            renameErrorMessage?.let { message ->
+                                                Spacer(Modifier.height(10.dp))
+                                                Text(
+                                                    text = message,
+                                                    color = Color.Red,
+                                                    fontSize = 13.sp
+                                                )
+                                            }
+                                        }
+                                    },
+                                    confirmButton = {
+                                        TextButton(
+                                            enabled = !isRenaming,
+                                            onClick = {
+                                                val validation =
+                                                    validateRenamedFileName(
+                                                        originalFileName =
+                                                            currentFileDetails
+                                                                .displayName,
+                                                        requestedStem =
+                                                            renameBaseName
+                                                    )
+
+                                                if (!validation.isValid) {
+                                                    renameErrorMessage =
+                                                        validation.errorMessage
+                                                    return@TextButton
+                                                }
+
+                                                val newDisplayName =
+                                                    validation.completeFileName
+                                                        ?: return@TextButton
+
+                                                scope.launch {
+                                                    isRenaming = true
+                                                    renameErrorMessage = null
+
+                                                    val oldUri = currentUri
+                                                    val renameResult =
+                                                        renamePhotoFile(
+                                                            context = context,
+                                                            uri = oldUri,
+                                                            newDisplayName =
+                                                                newDisplayName
+                                                        )
+
+                                                    if (renameResult.isSuccess) {
+                                                        val renamedUri =
+                                                            renameResult
+                                                                .renamedUri
+                                                                ?: oldUri
+
+                                                        val actualDisplayName =
+                                                            withContext(
+                                                                Dispatchers.IO
+                                                            ) {
+                                                                queryPhotoFileDetails(
+                                                                    context = context,
+                                                                    uri = renamedUri
+                                                                ).displayName
+                                                            }.takeUnless {
+                                                                it == "Unknown"
+                                                            } ?: newDisplayName
+
+                                                        if (
+                                                            currentIndex.intValue in
+                                                            activeSessionList.indices
+                                                        ) {
+                                                            activeSessionList[
+                                                                currentIndex.intValue
+                                                            ] = renamedUri
+                                                        }
+
+                                                        var mappingsChanged = false
+
+                                                        favoriteMappings =
+                                                            favoriteMappings.map { mapping ->
+                                                                if (isFavoritesMode) {
+                                                                    if (
+                                                                        mapping.favoriteUri ==
+                                                                        oldUri.toString()
+                                                                    ) {
+                                                                        mappingsChanged = true
+                                                                        mapping.copy(
+                                                                            favoriteUri =
+                                                                                renamedUri
+                                                                                    .toString()
+                                                                        )
+                                                                    } else {
+                                                                        mapping
+                                                                    }
+                                                                } else if (
+                                                                    sameImage(
+                                                                        Uri.parse(
+                                                                            mapping.originalUri
+                                                                        ),
+                                                                        oldUri
+                                                                    )
+                                                                ) {
+                                                                    mappingsChanged = true
+                                                                    mapping.copy(
+                                                                        originalUri =
+                                                                            renamedUri
+                                                                                .toString(),
+                                                                        originalFileName =
+                                                                            actualDisplayName,
+                                                                        originalRelativePath =
+                                                                            getOriginalRelativePath(
+                                                                                renamedUri
+                                                                            )
+                                                                    )
+                                                                } else {
+                                                                    mapping
+                                                                }
+                                                            }.toMutableList()
+
+                                                        if (mappingsChanged) {
+                                                            saveFavoriteMappings(
+                                                                context,
+                                                                favoriteMappings
+                                                            )
+                                                        }
+
+                                                        if (isFavoritesMode) {
+                                                            refreshFavs(context) {
+                                                                favoriteFiles = it
+                                                            }
+                                                        } else {
+                                                            pickedFolderImages.value =
+                                                                pickedFolderImages.value
+                                                                    .map { libraryUri ->
+                                                                        if (
+                                                                            sameImage(
+                                                                                libraryUri,
+                                                                                oldUri
+                                                                            )
+                                                                        ) {
+                                                                            renamedUri
+                                                                        } else {
+                                                                            libraryUri
+                                                                        }
+                                                                    }
+
+                                                            saveCachedPhotoLibrary(
+                                                                context = context,
+                                                                images =
+                                                                    pickedFolderImages
+                                                                        .value
+                                                            )
+                                                        }
+
+                                                        metadataRefreshVersion++
+                                                        showRenameDialog = false
+
+                                                        snackbarHostState
+                                                            .showSnackbar(
+                                                                "Renamed to " +
+                                                                    actualDisplayName
+                                                            )
+                                                    } else {
+                                                        renameErrorMessage =
+                                                            renameResult.errorMessage
+                                                    }
+
+                                                    isRenaming = false
+                                                }
+                                            }
+                                        ) {
+                                            if (isRenaming) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(18.dp),
+                                                    strokeWidth = 2.dp
+                                                )
+                                            } else {
+                                                Text("Rename")
+                                            }
+                                        }
+                                    },
+                                    dismissButton = {
+                                        TextButton(
+                                            enabled = !isRenaming,
+                                            onClick = {
+                                                showRenameDialog = false
+                                                renameErrorMessage = null
+                                            }
+                                        ) {
+                                            Text("Cancel")
+                                        }
+                                    }
+                                )
+                            }
+
+                            if (showDeleteDialog) {
+                                AlertDialog(
+                                    onDismissRequest = {
+                                        showDeleteDialog = false
+                                    },
+                                    title = { Text("Delete Photo?") },
+                                    text = {
+                                        Text(
+                                            "This permanently removes the " +
+                                                "original photo from the device."
+                                        )
+                                    },
+                                    confirmButton = {
+                                        TextButton(
+                                            onClick = {
+                                                showDeleteDialog = false
+
+                                                scope.launch {
+                                                    val deleteResult =
+                                                        deletePhotoFile(
+                                                            context = context,
+                                                            uri = currentUri
+                                                        )
+
+                                                    deleteResult.onSuccess {
+                                                        val linkedOriginalUris =
+                                                            favoriteMappings
+                                                                .filter { mapping ->
+                                                                    !mapping.isDeleted &&
+                                                                        runCatching {
+                                                                            sameImage(
+                                                                                Uri.parse(
+                                                                                    mapping.originalUri
+                                                                                ),
+                                                                                currentUri
+                                                                            )
+                                                                        }.getOrDefault(false)
+                                                                }
+                                                                .mapTo(mutableSetOf()) {
+                                                                    it.originalUri
+                                                                }
+
+                                                        val deletionUpdate =
+                                                            markOriginalsDeleted(
+                                                                mappings = favoriteMappings,
+                                                                deletedOriginalUris =
+                                                                    linkedOriginalUris
+                                                            )
+
+                                                        if (deletionUpdate.changed) {
+                                                            favoriteMappings =
+                                                                deletionUpdate.mappings
+                                                            saveFavoriteMappings(
+                                                                context,
+                                                                favoriteMappings
+                                                            )
+                                                        }
+
+                                                        activeSessionList.remove(
+                                                            currentUri
+                                                        )
+
+                                                        if (
+                                                            activeSessionList
+                                                                .isEmpty()
+                                                        ) {
+                                                            isPlaying = false
+                                                        } else if (
+                                                            currentIndex.intValue >=
+                                                            activeSessionList.size
+                                                        ) {
+                                                            currentIndex.intValue =
+                                                                activeSessionList
+                                                                    .lastIndex
+                                                        }
+
+                                                        scanAllFolders()
+                                                    }.onFailure { exception ->
+                                                        snackbarHostState
+                                                            .showSnackbar(
+                                                                exception.message
+                                                                    ?: "The photo could not be deleted."
+                                                            )
+                                                    }
+                                                }
+                                            }
+                                        ) {
+                                            Text(
+                                                "Delete",
+                                                color = Color.Red
+                                            )
+                                        }
+                                    },
+                                    dismissButton = {
+                                        TextButton(
+                                            onClick = {
+                                                showDeleteDialog = false
+                                            }
+                                        ) {
+                                            Text("Cancel")
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    val currentLinkReview =
+        pendingFavoriteLinkReviews.getOrNull(
+            currentFavoriteLinkReviewIndex
+        )
+
+    if (currentLinkReview != null) {
+
+        /*
+         * Remove candidates that may have been assigned while
+         * resolving an earlier duplicate.
+         */
+        val availableCandidates =
+            currentLinkReview.candidates.filterNot {
+                    candidate ->
+
+                favoriteMappings.any { mapping ->
+                    mapping.originalUri ==
+                            candidate.sourceUri.toString()
+                }
+            }
+
+        AlertDialog(
+            onDismissRequest = {
+                /*
+                 * Closing does not lose anything.
+                 * Rerunning Repair Favorite Links will recreate
+                 * the unresolved review queue.
+                 */
+                pendingFavoriteLinkReviews =
+                    emptyList()
+
+                currentFavoriteLinkReviewIndex = 0
+            },
+
+            title = {
+                Column {
+                    Text("Choose the Original Photo")
+
+                    Text(
+                        text =
+                            "Review ${currentFavoriteLinkReviewIndex + 1} of ${pendingFavoriteLinkReviews.size}",
+
+                        style =
+                            MaterialTheme.typography.labelMedium,
+
+                        color = Color.Gray
+                    )
+                }
+            },
+
+            text = {
+                Column {
+                    Text(
+                        text = "Saved favorite copy",
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    AsyncImage(
+                        model =
+                            currentLinkReview
+                                .favoriteFile
+                                .mediaUri,
+
+                        contentDescription =
+                            "Saved favorite preview",
+
+                        contentScale =
+                            ContentScale.Fit,
+
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(190.dp)
+                            .clip(
+                                RoundedCornerShape(16.dp)
+                            )
+                            .background(Color.Black)
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(18.dp)
+                    )
+
+                    Text(
+                        text =
+                            "Which original image created this favorite?",
+
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    if (availableCandidates.isEmpty()) {
+                        Text(
+                            text =
+                                "No unused candidates remain for this favorite.",
+
+                            color = Color.Gray
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(
+                                max = 360.dp
+                            )
+                        ) {
+                            items(
+                                items = availableCandidates,
+                                key = {
+                                        candidate ->
+                                    candidate.sourceUri.toString()
+                                }
+                            ) { candidate ->
+
+                                Surface(
+                                    onClick = {
+                                        scope.launch {
+                                            val reviewFavorite =
+                                                currentLinkReview.favoriteFile
+                                            val oldFavoriteUri =
+                                                reviewFavorite.mediaUri.toString()
+                                            val existingMapping =
+                                                findFavoriteMappingForFile(
+                                                    mappings = favoriteMappings,
+                                                    favoriteFile = reviewFavorite
+                                                )
+                                            val existingFavoriteId =
+                                                existingMapping?.favoriteId.orEmpty()
+
+                                            val durableFavoriteId = existingFavoriteId
+                                                .ifBlank {
+                                                    favoriteIdFromFileName(
+                                                        reviewFavorite.fileNameOnDisk
+                                                    )
+                                                }
+                                                .ifBlank { newFavoriteId() }
+
+                                            val identifiedFavorite =
+                                                withContext(Dispatchers.IO) {
+                                                    ensureFavoriteFileIdentity(
+                                                        context = context,
+                                                        favoriteUri = reviewFavorite.mediaUri,
+                                                        favoriteId = durableFavoriteId,
+                                                        knownFileName =
+                                                            reviewFavorite.fileNameOnDisk
+                                                    )
+                                                }
+
+                                            val originalSha256 =
+                                                calculateOriginalSha256(
+                                                    context = context,
+                                                    uri = candidate.sourceUri
+                                                )
+
+                                            val photoId = withContext(Dispatchers.IO) {
+                                                resolveCatalogPhotoId(
+                                                    context = context,
+                                                    originalUri = candidate.sourceUri
+                                                )
+                                            }
+
+                                            val newFavoriteUri =
+                                                identifiedFavorite.first.toString()
+
+                                            if (
+                                                existingMapping?.photoId?.isNotBlank() == true &&
+                                                existingMapping.photoId != photoId &&
+                                                photoId.isNotBlank()
+                                            ) {
+                                                withContext(Dispatchers.IO) {
+                                                    moveAlbumMembershipsToPhoto(
+                                                        context = context,
+                                                        fromPhotoId = existingMapping.photoId,
+                                                        toPhotoId = photoId
+                                                    )
+                                                }
+                                            }
+
+                                            val updatedMappings =
+                                                favoriteMappings
+                                                    .filterNot { mapping ->
+                                                        (durableFavoriteId.isNotBlank() &&
+                                                            mapping.favoriteId.equals(
+                                                                durableFavoriteId,
+                                                                ignoreCase = true
+                                                            )) ||
+                                                            mapping.favoriteUri == oldFavoriteUri ||
+                                                            mapping.favoriteUri == newFavoriteUri ||
+                                                            (photoId.isNotBlank() &&
+                                                                mapping.photoId == photoId) ||
+                                                            mapping.originalUri ==
+                                                                candidate.sourceUri.toString()
+                                                    }
+                                                    .toMutableList()
+
+                                            updatedMappings.add(
+                                                FavoriteMapping(
+                                                    originalUri =
+                                                        candidate.sourceUri.toString(),
+                                                    favoriteUri = newFavoriteUri,
+                                                    originalFileName = candidate.fileName,
+                                                    photoId = photoId,
+                                                    favoriteId = durableFavoriteId,
+                                                    favoriteFileName =
+                                                        identifiedFavorite.second,
+                                                    originalRelativePath =
+                                                        candidate.relativePath,
+                                                    originalSha256 = originalSha256,
+                                                    dateAdded =
+                                                        System.currentTimeMillis()
+                                                )
+                                            )
+
+                                            favoriteMappings = updatedMappings
+
+                                            saveFavoriteMappings(
+                                                context,
+                                                updatedMappings
+                                            )
+
+                                            val albumLinksRepaired =
+                                                withContext(Dispatchers.IO) {
+                                                    relinkFavoriteAlbumMembershipsToOriginals(
+                                                        context = context,
+                                                        mappings = updatedMappings
+                                                    )
+                                                }
+
+                                            if (albumLinksRepaired > 0) {
+                                                albums = withContext(Dispatchers.IO) {
+                                                    loadAlbums(context)
+                                                }
+                                            }
+
+                                            refreshFavs(context) { updatedFavorites ->
+                                                favoriteFiles = updatedFavorites
+                                            }
+
+                                            advanceFavoriteLinkReview()
+                                        }
+                                    },
+
+                                    shape =
+                                        RoundedCornerShape(16.dp),
+
+                                    color =
+                                        Color.White.copy(
+                                            alpha = 0.06f
+                                        ),
+
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(
+                                            vertical = 5.dp
+                                        )
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(
+                                            10.dp
+                                        ),
+
+                                        verticalAlignment =
+                                            Alignment.CenterVertically
+                                    ) {
+                                        AsyncImage(
+                                            model =
+                                                candidate.sourceUri,
+
+                                            contentDescription =
+                                                candidate.relativePath,
+
+                                            contentScale =
+                                                ContentScale.Crop,
+
+                                            modifier = Modifier
+                                                .size(72.dp)
+                                                .clip(
+                                                    RoundedCornerShape(
+                                                        12.dp
+                                                    )
+                                                )
+                                                .background(
+                                                    Color.Black
+                                                )
+                                        )
+
+                                        Spacer(
+                                            modifier =
+                                                Modifier.width(12.dp)
+                                        )
+
+                                        Column(
+                                            modifier =
+                                                Modifier.weight(1f)
+                                        ) {
+                                            Text(
+                                                text =
+                                                    candidate.fileName,
+
+                                                fontWeight =
+                                                    FontWeight.Bold
+                                            )
+
+                                            Spacer(
+                                                modifier =
+                                                    Modifier.height(3.dp)
+                                            )
+
+                                            Text(
+                                                text =
+                                                    candidate.relativePath,
+
+                                                color = Color.Gray,
+
+                                                style =
+                                                    MaterialTheme
+                                                        .typography
+                                                        .bodySmall
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        advanceFavoriteLinkReview()
+                    }
+                ) {
+                    Text("Skip for Now")
+                }
+            },
+
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        pendingFavoriteLinkReviews =
+                            emptyList()
+
+                        currentFavoriteLinkReviewIndex =
+                            0
+                    }
+                ) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+
+    if (showAddToAlbums && isPlaying && activeSessionList.isNotEmpty()) {
+        val viewerPhoto = activeSessionList[currentIndex.intValue]
+        val photo = if (isFavoritesMode) {
+            favoriteMappings.find { it.favoriteUri == viewerPhoto.toString() }
+                ?.originalUri
+                ?.takeIf { it.isNotBlank() }
+                ?.let(Uri::parse)
+                ?: viewerPhoto
+        } else {
+            viewerPhoto
+        }
+        AddToAlbumsSheet(
+            currentPhoto = photo,
+            linkedPhotoUris = remember(viewerPhoto, favoriteMappings) {
+                val raw = viewerPhoto.toString()
+                val mapping = findActiveFavoriteMapping(
+                    mappings = favoriteMappings,
+                    photoUri = raw
+                ) { savedOriginalUri, currentPhotoUri ->
+                    sameImage(Uri.parse(savedOriginalUri), Uri.parse(currentPhotoUri))
+                }
+                if (mapping == null) setOf(raw)
+                else setOf(mapping.originalUri, mapping.favoriteUri)
+                    .filter { it.isNotBlank() }.toSet()
+            },
+            albums = albums,
+            onToggle = { albumId, included ->
+                val albumName = albums.firstOrNull { it.id == albumId }?.name ?: "album"
+                val viewerPhotoString = viewerPhoto.toString()
+                val photoString = photo.toString()
+                val photoIsFavorited = favoriteFiles.any { favoriteFile ->
+                    favoriteFile.mediaUri.toString() == viewerPhotoString ||
+                        runCatching {
+                            sameImage(favoriteFile.mediaUri, viewerPhoto)
+                        }.getOrDefault(false)
+                } || findActiveFavoriteMapping(
+                    mappings = favoriteMappings,
+                    photoUri = photoString
+                ) { savedOriginalUri, currentPhotoUri ->
+                    sameImage(
+                        Uri.parse(savedOriginalUri),
+                        Uri.parse(currentPhotoUri)
+                    )
+                } != null
+                albums = setPhotoInAlbum(context, albums, albumId, photo, included)
+                Toast.makeText(
+                    context,
+                    if (included) {
+                        if (photoIsFavorited) {
+                            "Favorite added to album $albumName"
+                        } else {
+                            "Photo added to album $albumName"
+                        }
+                    } else {
+                        "Removed from album $albumName"
+                    },
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onCreate = { name ->
+                val albumName = name.trim()
+                val viewerPhotoString = viewerPhoto.toString()
+                val photoString = photo.toString()
+                val photoIsFavorited = favoriteFiles.any { favoriteFile ->
+                    favoriteFile.mediaUri.toString() == viewerPhotoString ||
+                        runCatching {
+                            sameImage(favoriteFile.mediaUri, viewerPhoto)
+                        }.getOrDefault(false)
+                } || findActiveFavoriteMapping(
+                    mappings = favoriteMappings,
+                    photoUri = photoString
+                ) { savedOriginalUri, currentPhotoUri ->
+                    sameImage(
+                        Uri.parse(savedOriginalUri),
+                        Uri.parse(currentPhotoUri)
+                    )
+                } != null
+                albums = createAlbum(context, albums, name, photo)
+                Toast.makeText(
+                    context,
+                    if (photoIsFavorited) {
+                        "Favorite added to album $albumName"
+                    } else {
+                        "Photo added to album $albumName"
+                    },
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onDismiss = { showAddToAlbums = false }
+        )
+    }
+
+    if (showFilenameSearch) {
+        PhotoFilenameSearchSheet(
+            libraryPhotos = pickedFolderImages.value.toList(),
+            albums = albums,
+            favorites = favoriteFiles,
+            onOpenResults = { matches, selected, fromFavorites ->
+                if (matches.isNotEmpty()) {
+                    isFavoritesMode = fromFavorites
+                    isAlbumMode = !fromFavorites
+                    activeSessionList.clear()
+                    activeSessionSource.clear()
+                    activeSessionList.addAll(matches)
+                    activeSessionSource.addAll(matches)
+                    currentIndex.intValue = selected.coerceIn(0, matches.lastIndex)
+                    showFilenameSearch = false
+                    isPlaying = true
+                }
+            },
+            onDismiss = { showFilenameSearch = false }
+        )
+    }
+
+    if (showRouletteCollectionPicker) {
+        RouletteCollectionSheet(
+            favoriteCount = favoriteFiles.size,
+            isFavoritesLoading = isFavoritesLoading,
+            albums = albums,
+            isPro = isPro,
+            allPhotos = pickedFolderImages.value,
+            onPlayFavorites = {
+                if (favoriteFiles.isNotEmpty()) {
+                    isFavoritesMode = true
+                    isAlbumMode = false
+                    activeSessionList.clear()
+                    activeSessionSource.clear()
+                    activeSessionSource.addAll(favoriteFiles.map { it.mediaUri })
+                    activeSessionList.addAll(activeSessionSource.shuffled())
+                    currentIndex.intValue = 0
+                    showRouletteCollectionPicker = false
+                    isPlaying = true
+                }
+            },
+            onPlayAlbum = { photos ->
+                if (photos.isNotEmpty()) {
+                    isFavoritesMode = false
+                    isAlbumMode = true
+                    activeSessionList.clear()
+                    activeSessionSource.clear()
+                    activeSessionSource.addAll(photos)
+                    activeSessionList.addAll(activeSessionSource.shuffled())
+                    currentIndex.intValue = 0
+                    showRouletteCollectionPicker = false
+                    isPlaying = true
+                } else {
+                    Toast.makeText(context, "No album photos are currently available.", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onRequestPro = {
+                showRouletteCollectionPicker = false
+                showProUpgrade = true
+            },
+            onDismiss = { showRouletteCollectionPicker = false }
+        )
+    }
+
+    if (showSmartRoulette) {
+        SmartRouletteSheet(
+            initial = smartFilters,
+            onFiltersChanged = { filters ->
+                // Keep the user's Smart Filter choice as soon as they select it.
+                // This prevents reopening the sheet from ever falling back to All photos.
+                smartFilters = filters
+                saveProRouletteFilters(context, filters)
+            },
+            onApply = { filters ->
+                smartFilters = filters
+                saveProRouletteFilters(context, filters)
+                showSmartRoulette = false
+                val sourceImages = pickedFolderImages.value.toList()
+                val favoriteOriginalUris = favoriteMappings.asSequence()
+                    .filter { !it.isDeleted && it.originalUri.isNotBlank() }
+                    .map { it.originalUri }.toSet()
+                scope.launch {
+                    val filtered = withContext(Dispatchers.IO) {
+                        applyProRouletteFilters(context, sourceImages, favoriteOriginalUris, filters)
+                    }
+                    if (filtered.isNotEmpty()) {
+                        isFavoritesMode = false
+                        isAlbumMode = false
+                        activeSessionList.clear()
+                        activeSessionSource.clear()
+                        activeSessionSource.addAll(filtered)
+                        activeSessionList.addAll(filtered.shuffled())
+                        currentIndex.intValue = 0
+                        isPlaying = true
+                    } else {
+                        Toast.makeText(context, "No photos match those Smart Filters.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onDismiss = { showSmartRoulette = false }
+        )
+    }
+
+    if (showRouletteHistory) {
+        val history = remember(historyGeneration, showRouletteHistory) { loadRouletteHistory(context) }
+        val recentFolders = remember(historyGeneration, showRouletteHistory) { loadRecentFolders(context) }
+        RouletteHistorySheet(
+            history = history,
+            recentFolders = recentFolders,
+            onOpen = { uri ->
+                activeSessionList.clear()
+                activeSessionSource.clear()
+                activeSessionSource.add(uri)
+                activeSessionList.add(uri)
+                currentIndex.intValue = 0
+                isFavoritesMode = false
+                isAlbumMode = false
+                showRouletteHistory = false
+                isPlaying = true
+            },
+            onOpenFolder = { folder ->
+                val photos = photosInRecentFolder(pickedFolderImages.value, folder.key)
+                if (photos.isNotEmpty()) {
+                    activeSessionList.clear()
+                    activeSessionSource.clear()
+                    activeSessionSource.addAll(photos)
+                    activeSessionList.addAll(photos)
+                    currentIndex.intValue = 0
+                    isFavoritesMode = false
+                    isAlbumMode = false
+                    showRouletteHistory = false
+                    isPlaying = true
+                } else {
+                    Toast.makeText(context, "That folder is no longer available in the library.", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onClearPhotos = {
+                clearRouletteHistory(context)
+                historyGeneration++
+            },
+            onClearFolders = {
+                clearRecentFolders(context)
+                historyGeneration++
+            },
+            onDismiss = { showRouletteHistory = false }
+        )
+    }
+
+    if (showProUpgrade) {
+        ProUpgradeSheet(
+            installationId = ProAccess.installationId(context),
+            isPro = isPro,
+            onActivate = { code ->
+                ProAccess.activateComplimentaryPro(context, code)
+            },
+            onDismiss = { showProUpgrade = false }
+        )
+    }
+
+    if (showDuplicatesSheet) {
+        DuplicateReviewSheet(
+            libraryPhotos = pickedFolderImages.value,
+            folders = folderConfigs,
+            albums = albums,
+            favoriteFiles = favoriteFiles,
+            mappings = favoriteMappings,
+            onAlbumsChanged = { updated -> albums = updated },
+            onToggleFavorite = favoriteToggle@{ photoUri ->
+                // Duplicate Finder operates on ORIGINAL photo URIs, but older
+                // results can contain a favorite URI. Normalize first.
+                val current = favoriteMappings.firstOrNull { mapping ->
+                    !mapping.isDeleted && (
+                        mapping.originalUri == photoUri.toString() ||
+                        mapping.favoriteUri == photoUri.toString() ||
+                        runCatching { sameImage(Uri.parse(mapping.originalUri), photoUri) }.getOrDefault(false) ||
+                        (mapping.favoriteUri.isNotBlank() &&
+                            runCatching { sameImage(Uri.parse(mapping.favoriteUri), photoUri) }.getOrDefault(false))
+                    )
+                }
+                if (current != null) {
+                    // Save the mapping change first, and restore it if removal
+                    // of the linked favorite copy fails.
+                    val oldMappings = favoriteMappings.toList()
+                    val newMappings = favoriteMappings.filterNot { it == current }.toMutableList()
+                    if (!saveFavoriteMappings(context, newMappings, synchronous = true)) {
+                        return@favoriteToggle false
+                    }
+                    val removed = current.favoriteUri.isNotBlank() && withContext(Dispatchers.IO) {
+                        deleteFavorite(context, Uri.parse(current.favoriteUri))
+                    }
+                    if (!removed) {
+                        saveFavoriteMappings(context, oldMappings, synchronous = true)
+                        return@favoriteToggle false
+                    }
+                    favoriteMappings = newMappings
+                    refreshFavs(context) { favoriteFiles = it }
+                    true
+                } else {
+                    val sourceUri = photoUri
+                    val favoriteId = newFavoriteId()
+                    val sourceName = displayNameForUri(context, sourceUri)
+                    // FIT with neutral pan/zoom saves the complete image.
+                    val savedUri = saveToFavoritesFolder(
+                        context = context,
+                        sourceUri = sourceUri,
+                        fileName = sourceName,
+                        favoriteId = favoriteId,
+                        scale = 1f,
+                        offset = Offset.Zero,
+                        containerSize = IntSize(1024, 1024),
+                        displayMode = PhotoDisplayMode.FIT
+                    ) ?: return@favoriteToggle false
+                    val updated = favoriteMappings.toMutableList()
+                    updated.add(
+                        FavoriteMapping(
+                            originalUri = sourceUri.toString(),
+                            favoriteUri = savedUri.toString(),
+                            originalFileName = sourceName,
+                            photoId = resolveCatalogPhotoId(context, sourceUri),
+                            favoriteId = favoriteId,
+                            favoriteFileName = displayNameForUri(context, savedUri),
+                            originalRelativePath = getOriginalRelativePath(sourceUri),
+                            originalSha256 = calculateOriginalSha256(context, sourceUri),
+                            dateAdded = System.currentTimeMillis()
+                        )
+                    )
+                    if (!saveFavoriteMappings(context, updated, synchronous = true)) {
+                        withContext(Dispatchers.IO) { deleteFavorite(context, savedUri) }
+                        return@favoriteToggle false
+                    }
+                    favoriteMappings = updated
+                    refreshFavs(context) { favoriteFiles = it }
+                    true
+                }
+            },
+            onDeleted = { deletedUris ->
+                // Only mutate membership and favorite state for confirmed deletions.
+                scope.launch {
+                    val deleted = deletedUris.mapTo(mutableSetOf()) { it.toString() }
+                    withContext(Dispatchers.IO) {
+                        val dao = PicRouletteDatabase.get(context).albumDao()
+                        val snapshot = loadAlbums(context)
+                        deletedUris.forEach { uri ->
+                            val memberOf = snapshot.filter { uri.toString() in it.photoUris }
+                            if (memberOf.isNotEmpty()) {
+                                val entity = ensureCatalogPhoto(context, uri)
+                                memberOf.forEach { album ->
+                                    dao.removeFromAlbum(album.id, entity.id)
+                                }
+                            }
+                        }
+                        val keptMappings = favoriteMappings.filterNot { mapping ->
+                            mapping.originalUri in deleted || mapping.favoriteUri in deleted
+                        }.toMutableList()
+                        saveFavoriteMappings(context, keptMappings)
+                        keptMappings
+                    }.let { updatedMappings -> favoriteMappings = updatedMappings }
+                    albums = withContext(Dispatchers.IO) { loadAlbums(context) }
+                    favoriteFiles = favoriteFiles.filterNot { it.mediaUri.toString() in deleted }
+                    pickedFolderImages.value = pickedFolderImages.value.filterNot { it.toString() in deleted }
+                    activeSessionList.removeAll { it.toString() in deleted }
+                    activeSessionSource.removeAll { it.toString() in deleted }
+                    if (activeSessionList.isEmpty()) isPlaying = false
+                    scanAllFolders()
+                    refreshFavs(context) { favoriteFiles = it }
+                }
+            },
+            onDismiss = { showDuplicatesSheet = false }
+        )
+    }
+
+    if (showAlbumsBrowser) {
+        AlbumsBrowserSheet(
+            albums = albums,
+            isPro = isPro,
+            allPhotos = pickedFolderImages.value,
+            onPlay = { photos ->
+                if (photos.isNotEmpty()) {
+                    isFavoritesMode = false
+                    isAlbumMode = true
+                    activeSessionList.clear()
+                    activeSessionSource.clear()
+                    activeSessionSource.addAll(photos)
+                    activeSessionList.addAll(activeSessionSource.shuffled())
+                    currentIndex.intValue = 0
+                    showAlbumsBrowser = false
+                    isPlaying = true
+                } else {
+                    Toast.makeText(context, "No album photos are currently available.", Toast.LENGTH_SHORT).show()
+                }
+            },
+            onRename = { id, name -> albums = renameAlbum(context, albums, id, name) },
+            onDelete = { id -> albums = deleteAlbum(context, albums, id) },
+            onCreate = { name -> albums = createAlbum(context, albums, name) },
+            onDismiss = { showAlbumsBrowser = false }
+        )
+    }
+
+    if (isImportingFavorites) {
+        FavoritesImportProgressDialog(
+            progress = favoritesImportProgress,
+            themeColor = themeColor
+        )
+    }
+}
+
+private fun formatFavoriteMoveEta(remainingMillis: Long): String {
+    val remainingSeconds =
+        ((remainingMillis + 999L) / 1_000L).coerceAtLeast(1L)
+
+    if (remainingSeconds < 60L) {
+        return "Less than a minute remaining"
+    }
+
+    val remainingMinutes = (remainingSeconds + 59L) / 60L
+
+    if (remainingMinutes < 60L) {
+        return if (remainingMinutes == 1L) {
+            "About 1 minute remaining"
+        } else {
+            "About $remainingMinutes minutes remaining"
+        }
+    }
+
+    val hours = remainingMinutes / 60L
+    val minutes = remainingMinutes % 60L
+    return if (minutes == 0L) {
+        "About $hours ${if (hours == 1L) "hour" else "hours"} remaining"
+    } else {
+        "About ${hours}h ${minutes}m remaining"
+    }
+}
+
+@Composable
+private fun ViewerDisplayModeChoice(
+    title: String,
+    selected: Boolean,
+    themeColor: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) {
+            themeColor
+        } else {
+            Color.Transparent
+        },
+        modifier = Modifier
+            .width(72.dp)
+            .height(42.dp)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (selected) "✓ $title" else title,
+                color = if (selected) Color.Black else Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
+            )
+        }
+    }
+}
+
+@Composable
+private fun FavoritesImportProgressDialog(
+    progress: FavoritesZipImportProgress?,
+    themeColor: Color
+) {
+    val phase = progress?.phase
+        ?: FavoritesZipImportPhase.READING_BACKUP
+
+    val completed = progress?.completed ?: 0
+    val total = progress?.total ?: 0
+
+    val fraction =
+        if (total > 0) {
+            (completed.toFloat() / total.toFloat())
+                .coerceIn(0f, 1f)
+        } else {
+            null
+        }
+
+    val statusText = when (phase) {
+        FavoritesZipImportPhase.READING_BACKUP -> {
+            if (completed > 0) {
+                "Reading backup • $completed entries checked"
+            } else {
+                "Reading backup"
+            }
+        }
+
+        FavoritesZipImportPhase.CHECKING_EXISTING_FAVORITES -> {
+            if (total > 0) {
+                "Checking existing favorites • $completed of $total"
+            } else {
+                "Checking existing favorites"
+            }
+        }
+
+        FavoritesZipImportPhase.IMPORTING_FAVORITES -> {
+            if (total > 0) {
+                "Importing favorites • $completed of $total"
+            } else {
+                "Importing favorites"
+            }
+        }
+
+        FavoritesZipImportPhase.PREPARING_SOURCE_LIBRARY -> {
+            if (total > 0) {
+                "Preparing source library • $completed of $total"
+            } else {
+                "Preparing source library"
+            }
+        }
+
+        FavoritesZipImportPhase.RESTORING_LINKS -> {
+            if (total > 0) {
+                "Restoring original-photo links • $completed of $total"
+            } else {
+                "Restoring original-photo links"
+            }
+        }
+
+        FavoritesZipImportPhase.COMPARING_SOURCE_PHOTOS -> {
+            if (total > 0) {
+                "Comparing source photos • $completed of $total"
+            } else {
+                "Comparing source photos"
+            }
+        }
+
+        FavoritesZipImportPhase.FINISHING -> {
+            "Finishing import"
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = {
+            /*
+             * Imports cannot be dismissed midway because files and mappings
+             * may still be actively written.
+             */
+        },
+        title = {
+            Text(
+                text = "Restoring Favorites",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (fraction == null) {
+                    Row(
+                        verticalAlignment =
+                            Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            color = themeColor,
+                            strokeWidth = 3.dp
+                        )
+
+                        Spacer(
+                            modifier = Modifier.width(12.dp)
+                        )
+
+                        Text(
+                            text = statusText,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                } else {
+                    Text(
+                        text = statusText,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Spacer(
+                        modifier = Modifier.height(12.dp)
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(10.dp)
+                            .clip(
+                                RoundedCornerShape(999.dp)
+                            )
+                            .background(
+                                Color.White.copy(alpha = 0.12f)
+                            )
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth(fraction)
+                                .fillMaxHeight()
+                                .background(themeColor)
+                        )
+                    }
+
+                    Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+
+                    Text(
+                        text = "${(fraction * 100f).toInt()}%",
+                        color = Color.Gray,
+                        style =
+                            MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                val currentFileName =
+                    progress?.currentFileName.orEmpty()
+
+                if (currentFileName.isNotBlank()) {
+                    Spacer(
+                        modifier = Modifier.height(12.dp)
+                    )
+
+                    Text(
+                        text = currentFileName,
+                        color = Color.Gray,
+                        style =
+                            MaterialTheme.typography.bodySmall,
+                        maxLines = 2
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.SpaceBetween
+                ) {
+                    ImportProgressCount(
+                        label = "Imported",
+                        value = progress?.importedCount ?: 0
+                    )
+
+                    ImportProgressCount(
+                        label = "Already there",
+                        value =
+                            progress
+                                ?.skippedDuplicateCount
+                                ?: 0
+                    )
+
+                    ImportProgressCount(
+                        label = "Failed",
+                        value = progress?.failedCount ?: 0
+                    )
+                }
+
+                Spacer(
+                    modifier = Modifier.height(16.dp)
+                )
+
+                Text(
+                    text =
+                        "Keep PicRoulette open until the import finishes.",
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        },
+        confirmButton = {}
+    )
+}
+
+@Composable
+private fun ImportProgressCount(
+    label: String,
+    value: Int
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = value.toString(),
+            fontWeight = FontWeight.Bold
+        )
+
+        Text(
+            text = label,
+            color = Color.Gray,
+            style = MaterialTheme.typography.labelSmall
+        )
+    }
+}

@@ -55,6 +55,7 @@ fun PicRouletteOptionsSheet(
     onScanLibraryOnStartChanged: (Boolean) -> Unit,
     onDefaultPhotoDisplayModeChanged: (PhotoDisplayMode) -> Unit,
     onOpenBackupRestore: () -> Unit,
+    onOpenDuplicates: () -> Unit,
     onChangeFavoriteFolder: () -> Unit,
     onUseDefaultFavoriteFolder: () -> Unit,
     onShowTutorial: () -> Unit,

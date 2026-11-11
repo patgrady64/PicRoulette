@@ -5,13 +5,13 @@ plugins {
 }
 
 android {
-    namespace = "com.patgrady64.picroulette"
+    namespace = "com.pgdevhouse.picroulette"
     compileSdk {
         version = release(36)
     }
 
     defaultConfig {
-        applicationId = "com.patgrady64.picroulette"
+        applicationId = "com.pgdevhouse.picroulette"
         minSdk = 29
         targetSdk = 36
         versionCode = 1

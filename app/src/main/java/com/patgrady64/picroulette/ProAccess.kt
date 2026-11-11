@@ -1,6 +1,7 @@
 package com.patgrady64.picroulette
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.util.Base64
 import java.security.KeyFactory
 import java.security.SecureRandom
@@ -23,7 +24,7 @@ object ProAccess {
         "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAERS+/o+Yk6bXiUVJOQZB71UAA1UDNroScUrs2CMNpUsLUArNxUEINIYJkaumoM6P5BcBbkW+zcVRFKF7synyg6A=="
 
     fun isPro(context: Context): Boolean =
-        BuildConfig.DEBUG || context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        ((context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0) || context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(COMPLIMENTARY_PRO_KEY, false)
 
     fun installationId(context: Context): String {

@@ -209,6 +209,7 @@ fun PicRouletteApp(
     var scanCurrentFolder by remember { mutableStateOf("") }
     var showFoldersSheet by remember { mutableStateOf(false) }
     var showOptionsSheet by remember { mutableStateOf(false) }
+    var showDuplicatesSheet by remember { mutableStateOf(false) }
     var showBackupRestore by remember { mutableStateOf(false) }
     var isMovingFavorites by remember { mutableStateOf(false) }
     var favoriteFolderMigrationProgress by remember {
@@ -1446,6 +1447,10 @@ fun PicRouletteApp(
                     triggerVibration(context)
                     showFoldersSheet = true
                 },
+                onOpenDuplicates = {
+                    triggerVibration(context)
+                    showDuplicatesSheet = true
+                },
                 onOpenOptions = {
                     triggerVibration(context)
                     showOptionsSheet = true
@@ -1590,6 +1595,10 @@ fun PicRouletteApp(
                             context = context,
                             mode = mode
                         )
+                    },
+                    onOpenDuplicates = {
+                        showOptionsSheet = false
+                        showDuplicatesSheet = true
                     },
                     onOpenBackupRestore = {
                         if (isPro) {
@@ -3810,6 +3819,118 @@ fun PicRouletteApp(
                 ProAccess.activateComplimentaryPro(context, code)
             },
             onDismiss = { showProUpgrade = false }
+        )
+    }
+
+    if (showDuplicatesSheet) {
+        DuplicateReviewSheet(
+            libraryPhotos = pickedFolderImages.value,
+            folders = folderConfigs,
+            albums = albums,
+            favoriteFiles = favoriteFiles,
+            mappings = favoriteMappings,
+            onAlbumsChanged = { updated -> albums = updated },
+            onToggleFavorite = favoriteToggle@{ photoUri ->
+                // Duplicate Finder operates on ORIGINAL photo URIs, but older
+                // results can contain a favorite URI. Normalize first.
+                val current = favoriteMappings.firstOrNull { mapping ->
+                    !mapping.isDeleted && (
+                        mapping.originalUri == photoUri.toString() ||
+                        mapping.favoriteUri == photoUri.toString() ||
+                        runCatching { sameImage(Uri.parse(mapping.originalUri), photoUri) }.getOrDefault(false) ||
+                        (mapping.favoriteUri.isNotBlank() &&
+                            runCatching { sameImage(Uri.parse(mapping.favoriteUri), photoUri) }.getOrDefault(false))
+                    )
+                }
+                if (current != null) {
+                    // Save the mapping change first, and restore it if removal
+                    // of the linked favorite copy fails.
+                    val oldMappings = favoriteMappings.toList()
+                    val newMappings = favoriteMappings.filterNot { it == current }.toMutableList()
+                    if (!saveFavoriteMappings(context, newMappings, synchronous = true)) {
+                        return@favoriteToggle false
+                    }
+                    val removed = current.favoriteUri.isNotBlank() && withContext(Dispatchers.IO) {
+                        deleteFavorite(context, Uri.parse(current.favoriteUri))
+                    }
+                    if (!removed) {
+                        saveFavoriteMappings(context, oldMappings, synchronous = true)
+                        return@favoriteToggle false
+                    }
+                    favoriteMappings = newMappings
+                    refreshFavs(context) { favoriteFiles = it }
+                    true
+                } else {
+                    val sourceUri = photoUri
+                    val favoriteId = newFavoriteId()
+                    val sourceName = displayNameForUri(context, sourceUri)
+                    // FIT with neutral pan/zoom saves the complete image.
+                    val savedUri = saveToFavoritesFolder(
+                        context = context,
+                        sourceUri = sourceUri,
+                        fileName = sourceName,
+                        favoriteId = favoriteId,
+                        scale = 1f,
+                        offset = Offset.Zero,
+                        containerSize = IntSize(1024, 1024),
+                        displayMode = PhotoDisplayMode.FIT
+                    ) ?: return@favoriteToggle false
+                    val updated = favoriteMappings.toMutableList()
+                    updated.add(
+                        FavoriteMapping(
+                            originalUri = sourceUri.toString(),
+                            favoriteUri = savedUri.toString(),
+                            originalFileName = sourceName,
+                            photoId = resolveCatalogPhotoId(context, sourceUri),
+                            favoriteId = favoriteId,
+                            favoriteFileName = displayNameForUri(context, savedUri),
+                            originalRelativePath = getOriginalRelativePath(sourceUri),
+                            originalSha256 = calculateOriginalSha256(context, sourceUri),
+                            dateAdded = System.currentTimeMillis()
+                        )
+                    )
+                    if (!saveFavoriteMappings(context, updated, synchronous = true)) {
+                        withContext(Dispatchers.IO) { deleteFavorite(context, savedUri) }
+                        return@favoriteToggle false
+                    }
+                    favoriteMappings = updated
+                    refreshFavs(context) { favoriteFiles = it }
+                    true
+                }
+            },
+            onDeleted = { deletedUris ->
+                // Only mutate membership and favorite state for confirmed deletions.
+                scope.launch {
+                    val deleted = deletedUris.mapTo(mutableSetOf()) { it.toString() }
+                    withContext(Dispatchers.IO) {
+                        val dao = PicRouletteDatabase.get(context).albumDao()
+                        val snapshot = loadAlbums(context)
+                        deletedUris.forEach { uri ->
+                            val memberOf = snapshot.filter { uri.toString() in it.photoUris }
+                            if (memberOf.isNotEmpty()) {
+                                val entity = ensureCatalogPhoto(context, uri)
+                                memberOf.forEach { album ->
+                                    dao.removeFromAlbum(album.id, entity.id)
+                                }
+                            }
+                        }
+                        val keptMappings = favoriteMappings.filterNot { mapping ->
+                            mapping.originalUri in deleted || mapping.favoriteUri in deleted
+                        }.toMutableList()
+                        saveFavoriteMappings(context, keptMappings)
+                        keptMappings
+                    }.let { updatedMappings -> favoriteMappings = updatedMappings }
+                    albums = withContext(Dispatchers.IO) { loadAlbums(context) }
+                    favoriteFiles = favoriteFiles.filterNot { it.mediaUri.toString() in deleted }
+                    pickedFolderImages.value = pickedFolderImages.value.filterNot { it.toString() in deleted }
+                    activeSessionList.removeAll { it.toString() in deleted }
+                    activeSessionSource.removeAll { it.toString() in deleted }
+                    if (activeSessionList.isEmpty()) isPlaying = false
+                    scanAllFolders()
+                    refreshFavs(context) { favoriteFiles = it }
+                }
+            },
+            onDismiss = { showDuplicatesSheet = false }
         )
     }
 

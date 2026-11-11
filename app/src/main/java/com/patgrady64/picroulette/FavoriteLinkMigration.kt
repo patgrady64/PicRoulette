@@ -282,13 +282,24 @@ private fun favoriteMatchKey(
      * <original-stem>_yyyyMMddHHmmssSSS.jpg. Strip that generated
      * 17-digit suffix before comparing the favorite to its source.
      */
-    val withoutGeneratedTimestamp = withoutDurableId
+    val withoutReadableId = withoutDurableId.replace(
+        Regex("__PRF_[0-9a-fA-F-]{36}$", RegexOption.IGNORE_CASE),
+        ""
+    )
+
+    val withoutGeneratedTimestamp = withoutReadableId
         .replace(
             Regex("_\\d{17}$"),
             ""
         )
 
-    return withoutGeneratedTimestamp
+    // New readable favorite names carry the original stem after "_from_".
+    val withoutReadableTimestamp = withoutGeneratedTimestamp.replace(
+        Regex("^Favorite_(?:\\d{17}|\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}-\\d{3})_from_", RegexOption.IGNORE_CASE),
+        ""
+    )
+
+    return withoutReadableTimestamp
         .replace(
             Regex(
                 pattern =
