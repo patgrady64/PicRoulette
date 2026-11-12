@@ -91,7 +91,8 @@ private data class BackupManifest(
     val backupVersion: Int,
     val containsSourceLinks: Boolean,
     val filesByArchiveName: Map<String, BackupManifestFile>,
-    val albums: List<BackupAlbum>
+    val albums: List<BackupAlbum>,
+    val originalRoots: List<String>
 )
 
 private data class BackupAlbum(
@@ -150,6 +151,7 @@ fun importFavoritesZip(
     existingFavorites: List<FavoriteFile>,
     existingMappings: List<FavoriteMapping>,
     sourceImages: List<Uri>,
+    selectedRootUri: Uri? = null,
     onProgress: (FavoritesZipImportProgress) -> Unit = {}
 ): FavoritesZipImportResult {
 
@@ -524,6 +526,8 @@ fun importFavoritesZip(
         restoredArchiveFavorites = restoredArchiveFavorites,
         existingMappings = existingMappings,
         sourceImages = sourceImages,
+        originalRoots = manifest.originalRoots,
+        selectedRootUri = selectedRootUri,
         reportProgress = { phase, completed, total, fileName ->
             reportProgress(
                 phase = phase,
@@ -538,6 +542,8 @@ fun importFavoritesZip(
         context = context,
         albums = manifest.albums,
         sourceImages = sourceImages,
+        originalRoots = manifest.originalRoots,
+        selectedRootUri = selectedRootUri,
         restoredFavorites = restoredArchiveFavorites,
         restoredMappings = linkResult.updatedMappings
     )
@@ -588,6 +594,8 @@ private fun restoreSourceLinks(
     restoredArchiveFavorites: List<RestoredArchiveFavorite>,
     existingMappings: List<FavoriteMapping>,
     sourceImages: List<Uri>,
+    originalRoots: List<String>,
+    selectedRootUri: Uri?,
     reportProgress: (
         FavoritesZipImportPhase,
         Int,
@@ -890,7 +898,7 @@ private fun restoreSourceLinks(
             effectiveRelativePath.isNotBlank() -> {
                 val pathMatches =
                     sourceByRelativePath[
-                        normalizeRelativePath(effectiveRelativePath)
+                        normalizeRelativePath(remapBackupPath(effectiveRelativePath, originalRoots, selectedRootUri))
                     ]
                         .orEmpty()
                         .filterNot {
@@ -1327,7 +1335,12 @@ private fun readBackupManifest(
             false
         ),
         filesByArchiveName = filesByArchiveName,
-        albums = parseBackupAlbums(json)
+        albums = parseBackupAlbums(json),
+        originalRoots = json.optJSONArray("libraryRoots")?.let { roots ->
+            (0 until roots.length()).mapNotNull { i ->
+                roots.optJSONObject(i)?.optString("path")?.takeIf { it.isNotBlank() }
+            }
+        }.orEmpty()
     )
 }
 
@@ -1360,6 +1373,8 @@ private fun restoreAlbums(
     context: Context,
     albums: List<BackupAlbum>,
     sourceImages: List<Uri>,
+    originalRoots: List<String>,
+    selectedRootUri: Uri?,
     restoredFavorites: List<RestoredArchiveFavorite>,
     restoredMappings: MutableList<FavoriteMapping>
 ): Triple<Int, Int, Int> {
@@ -1548,7 +1563,7 @@ private fun restoreAlbums(
                 saved.relativePath.isNotBlank()
             ) {
                 candidatesByPath[
-                    normalizeRelativePath(saved.relativePath)
+                    normalizeRelativePath(remapBackupPath(saved.relativePath, originalRoots, selectedRootUri))
                 ].orEmpty()
             } else {
                 emptyList()
@@ -1568,7 +1583,8 @@ private fun restoreAlbums(
                 mappedOriginal == null &&
                 exact == null &&
                 pathResolved == null &&
-                saved.displayName.isNotBlank()
+                saved.displayName.isNotBlank() &&
+                (originalRoots.isEmpty() || saved.originalSha256.isNotBlank())
             ) {
                 candidates.filter { uri ->
                     metadata(uri).let { data ->
@@ -1868,6 +1884,24 @@ private fun normalizeArchiveEntryName(
     }
 
     return normalized
+}
+
+/** Rebase old-device paths onto the folder chosen on the new phone. */
+private fun remapBackupPath(
+    originalPath: String,
+    backupRoots: List<String>,
+    selectedRootUri: Uri?
+): String {
+    if (selectedRootUri == null || backupRoots.isEmpty()) return originalPath
+    val oldPath = originalPath.replace('\\', '/').trim('/')
+    val root = backupRoots.firstOrNull { oldPath.equals(it, true) ||
+        oldPath.startsWith("$it/", ignoreCase = true) } ?: return originalPath
+    val relative = oldPath.drop(root.length).trimStart('/')
+    val treeId = runCatching {
+        android.provider.DocumentsContract.getTreeDocumentId(selectedRootUri)
+    }.getOrNull().orEmpty()
+    val newRoot = Uri.decode(treeId.substringAfter(':', treeId)).trim('/')
+    return if (newRoot.isEmpty()) relative else "$newRoot/$relative"
 }
 
 private fun normalizeRelativePath(

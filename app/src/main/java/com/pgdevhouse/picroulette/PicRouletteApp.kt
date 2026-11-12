@@ -111,6 +111,8 @@ import kotlin.collections.plus
 import com.pgdevhouse.picroulette.utils.FavoritesZipImportPhase
 import com.pgdevhouse.picroulette.utils.FavoritesZipImportProgress
 import com.pgdevhouse.picroulette.utils.importFavoritesZip
+import com.pgdevhouse.picroulette.utils.verifyPortableRestore
+import com.pgdevhouse.picroulette.utils.PortableRestorePreview
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -172,6 +174,11 @@ fun PicRouletteApp(
     var isImportingFavorites by remember {
         mutableStateOf(false)
     }
+    var pendingPortableZip by remember { mutableStateOf<Uri?>(null) }
+    var portableRootUri by remember { mutableStateOf<Uri?>(null) }
+    var portablePreview by remember { mutableStateOf<PortableRestorePreview?>(null) }
+    var portablePreviewBusy by remember { mutableStateOf(false) }
+    var portablePreviewError by remember { mutableStateOf("") }
 
     var favoritesImportProgress by remember {
         mutableStateOf<FavoritesZipImportProgress?>(null)
@@ -698,24 +705,14 @@ fun PicRouletteApp(
         }
     }
 
-    val importFavoritesZipLauncher =
-        rememberLauncherForActivityResult(
-            contract =
-                ActivityResultContracts.OpenDocument()
-        ) { sourceZipUri ->
-
-            if (sourceZipUri == null) {
-                return@rememberLauncherForActivityResult
-            }
-
+    val startPortableImport: (Uri, Uri, List<Uri>) -> Unit = { sourceZipUri, selectedRoot, sourceImagesForRestore ->
             val existingFavoritesSnapshot =
                 favoriteFiles.toList()
 
             val existingMappingsSnapshot =
                 favoriteMappings.toList()
 
-            val sourceImagesSnapshot =
-                pickedFolderImages.value.toList()
+            val sourceImagesSnapshot = sourceImagesForRestore
 
             favoritesImportProgress =
                 FavoritesZipImportProgress(
@@ -737,6 +734,7 @@ fun PicRouletteApp(
                                 existingMappingsSnapshot,
                             sourceImages =
                                 sourceImagesSnapshot,
+                            selectedRootUri = selectedRoot,
                             onProgress = { progress ->
                                 scope.launch {
                                     if (isImportingFavorites) {
@@ -881,6 +879,46 @@ fun PicRouletteApp(
                             ?: "Favorites import failed",
                         android.widget.Toast.LENGTH_LONG
                     ).show()
+                }
+            }
+    }
+
+    val importFavoritesZipLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocument()
+        ) { sourceZipUri ->
+            if (sourceZipUri != null) {
+                pendingPortableZip = sourceZipUri
+                portablePreview = null
+                portableRootUri = null
+                portablePreviewError = ""
+            }
+        }
+
+    val portableRootLauncher =
+        rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocumentTree()
+        ) { uri ->
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                }
+                portableRootUri = uri
+                portablePreview = null
+                portablePreviewBusy = true
+                val zip = pendingPortableZip
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        runCatching {
+                            requireNotNull(zip)
+                            verifyPortableRestore(context, zip, uri)
+                        }
+                    }
+                    portablePreviewBusy = false
+                    result.onSuccess { portablePreview = it }
+                        .onFailure { portablePreviewError = it.message ?: "Folder verification failed" }
                 }
             }
         }
@@ -1030,7 +1068,9 @@ fun PicRouletteApp(
                             destinationUri = destinationUri,
                             favorites = favoritesSnapshot,
                             mappings = mappingsSnapshot,
-                            albums = albumsSnapshot
+                            albums = albumsSnapshot,
+                            libraryRoots = folderConfigs.map { it.uri },
+                            libraryImages = pickedFolderImages.value.toList()
                         )
                     }
                 }
@@ -1768,6 +1808,78 @@ fun PicRouletteApp(
                         }
                     },
                     confirmButton = {}
+                )
+            }
+
+            if (pendingPortableZip != null) {
+                val preview = portablePreview
+                AlertDialog(
+                    onDismissRequest = {
+                        if (!isImportingFavorites) {
+                            pendingPortableZip = null
+                            portablePreview = null
+                        }
+                    },
+                    title = { Text("Locate your pictures") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("Choose the main folder containing your photos on this device. PicRoulette will check its subfolders before restoring.")
+                            Button(onClick = { portableRootLauncher.launch(null) },
+                                enabled = !portablePreviewBusy && !isImportingFavorites) {
+                                Text(if (portableRootUri == null) "Choose photo folder" else "Change root folder")
+                            }
+                            if (portablePreviewBusy) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                Text("Comparing folders and photos…")
+                            }
+                            if (portablePreviewError.isNotBlank()) Text(portablePreviewError)
+                            if (preview != null) {
+                                Text("Folders: ${preview.matchedFolders} / ${preview.expectedFolders} matched")
+                                Text("Photos: ${preview.matchedPhotos} / ${preview.expectedPhotos} matched by relative name and path")
+                                if (preview.expectedFolders > 0) {
+                                    LinearProgressIndicator(
+                                        progress = { preview.matchedFolders.toFloat() / preview.expectedFolders },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                                if (preview.warning.isNotBlank()) Text(preview.warning)
+                                if (preview.missingFolders.isNotEmpty()) {
+                                    Text("Missing folders (${preview.missingFolders.size}):")
+                                    Column(modifier = Modifier.heightIn(max = 160.dp).verticalScroll(rememberScrollState())) {
+                                        preview.missingFolders.forEach { Text("• $it") }
+                                    }
+                                    Text("You can continue without these folders. Their missing photo links will be left unresolved rather than linked to the wrong photo.")
+                                }
+                                if (preview.expectedFolders > 0 && preview.matchedFolders == 0) {
+                                    Text("This folder doesn't appear to match your backup. Please check the root folder.")
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            enabled = preview != null && !isImportingFavorites &&
+                                (preview.expectedFolders == 0 || preview.matchedFolders > 0),
+                            onClick = {
+                                val zip = pendingPortableZip
+                                val root = portableRootUri
+                                if (zip != null && root != null && preview != null) {
+                                    pendingPortableZip = null
+                                    portablePreview = null
+                                    if (folderConfigs.none { it.uri == root }) {
+                                        folderConfigs = folderConfigs + FolderConfig(root, true)
+                                        saveFolders(context, folderConfigs)
+                                    }
+                                    startPortableImport(zip, root, preview.selectedPhotos)
+                                }
+                            }
+                        ) { Text(if (preview?.missingFolders?.isNotEmpty() == true) "Continue without missing" else "Restore") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { pendingPortableZip = null; portablePreview = null }) {
+                            Text("Cancel")
+                        }
+                    }
                 )
             }
 

@@ -3,6 +3,7 @@ package com.pgdevhouse.picroulette.utils
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.provider.DocumentsContract
 import com.pgdevhouse.picroulette.FavoriteFile
 import com.pgdevhouse.picroulette.FavoriteMapping
 import com.pgdevhouse.picroulette.PhotoAlbum
@@ -36,7 +37,9 @@ fun exportFavoritesZip(
     destinationUri: Uri,
     favorites: List<FavoriteFile>,
     mappings: List<FavoriteMapping>,
-    albums: List<PhotoAlbum> = emptyList()
+    albums: List<PhotoAlbum> = emptyList(),
+    libraryRoots: List<Uri> = emptyList(),
+    libraryImages: List<Uri> = emptyList()
 ): FavoritesZipExportResult {
 
     val outputStream = context.contentResolver
@@ -212,7 +215,7 @@ fun exportFavoritesZip(
 
             put(
                 "backupVersion",
-                4
+                5
             )
 
             put(
@@ -255,6 +258,33 @@ fun exportFavoritesZip(
                             it.originalSha256.isNotBlank())
                 }
             )
+
+            // Portable root-relative inventory. No device-specific storage URI
+            // is needed on the destination phone.
+            put("libraryRoots", JSONArray().apply {
+                libraryRoots.forEach { root ->
+                    val treeId = runCatching { DocumentsContract.getTreeDocumentId(root) }.getOrNull().orEmpty()
+                    val rootPath = Uri.decode(treeId.substringAfter(':', treeId)).trim('/')
+                    val entries = libraryImages.mapNotNull { uri ->
+                        val path = getOriginalRelativePath(uri)
+                        if (path.startsWith("$rootPath/")) path.removePrefix("$rootPath/")
+                        else null
+                    }
+                    put(JSONObject().apply {
+                        put("name", rootPath.substringAfterLast('/'))
+                        put("path", rootPath)
+                        put("files", JSONArray(entries))
+                        val folders = sortedSetOf<String>()
+                        entries.forEach { path ->
+                            val segments = path.split('/').dropLast(1)
+                            segments.indices.forEach { index ->
+                                folders.add(segments.take(index + 1).joinToString("/"))
+                            }
+                        }
+                        put("folders", JSONArray(folders.toList()))
+                    })
+                }
+            })
 
             put(
                 "files",
