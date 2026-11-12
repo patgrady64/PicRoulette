@@ -70,24 +70,13 @@ suspend fun saveToFavoritesFolder(
             crop = crop
         ) ?: return@withContext null
 
-        val originalStem = splitFileName(fileName).stem
-            .replace(Regex("[^A-Za-z0-9 _-]"), "")
-            .trim()
-            .take(45)
-            .ifBlank { "Unknown" }
-
-        // The original photo might be named just "5763.jpg" or similar.
-        // Give every favorite an understandable date and time, and retain the
-        // source filename so it remains possible to recognize where it came from.
-        val timestamp = SimpleDateFormat(
-            "yyyyMMddHHmmssSSS",
-            Locale.US
-        ).format(Date())
-
-        val finalName = favoriteFileNameWithId(
-            favoriteId = favoriteId,
-            existingFileName = "Favorite_${timestamp}_from_${originalStem}.jpg"
-        )
+        // Saved crops are JPEGs. Use the original's stem, retaining the .jpg
+        // extension even when the source image was PNG, HEIC or WebP.
+        val requestedName = formattedFavoriteName(fileName)
+        val existingNames = readFavoritesList(context).getOrNull()
+            ?.map { it.fileNameOnDisk.lowercase(Locale.ROOT) }
+            ?.toSet().orEmpty()
+        val finalName = uniqueFavoriteName(requestedName, existingNames)
 
         val destination = createFavoriteDestination(context, finalName)
             ?: return@withContext null

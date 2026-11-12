@@ -282,6 +282,8 @@ fun PicRouletteApp(
     }
 
     var showMetadata by remember { mutableStateOf(false) }
+    var isConvertingFavoriteNames by remember { mutableStateOf(false) }
+    var favoriteFormatProgress by remember { mutableStateOf<FavoriteFormatProgress?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameBaseName by remember { mutableStateOf("") }
     var renameErrorMessage by remember { mutableStateOf<String?>(null) }
@@ -1076,6 +1078,7 @@ fun PicRouletteApp(
     val repairFavoriteLinks: () -> Unit = repair@{
         if (
             isMigratingFavoriteLinks ||
+            isConvertingFavoriteNames ||
             isImportingFavorites ||
             isExportingFavorites ||
             isScanning.value ||
@@ -1539,7 +1542,44 @@ fun PicRouletteApp(
                     onFixFavoritesMapping = {
                         repairFavoriteLinks()
                     },
-                    isFixingFavoritesMapping = isMigratingFavoriteLinks
+                    isFixingFavoritesMapping = isMigratingFavoriteLinks,
+                    isConvertingFavorites = isConvertingFavoriteNames,
+                    conversionProgress = favoriteFormatProgress,
+                    onConvertFavorites = {
+                        if (!isConvertingFavoriteNames && !isMigratingFavoriteLinks) {
+                            isConvertingFavoriteNames = true
+                            scope.launch {
+                                try {
+                                    val result = convertFavoritesToNewFormat(
+                                        context, favoriteMappings.toList()
+                                    ) { progress ->
+                                        withContext(Dispatchers.Main) {
+                                            favoriteFormatProgress = progress
+                                        }
+                                    }
+                                    favoriteMappings = result.updated
+                                    favoriteFiles = withContext(Dispatchers.IO) {
+                                        readFavoritesList(context).getOrElse { favoriteFiles }
+                                    }
+                                    snackbarHostState.showSnackbar(
+                                        "Converted ${result.renamed} favorites" +
+                                            " · ${result.skipped} skipped · ${result.failed} failed"
+                                    )
+                                } catch (e: Exception) {
+                                    favoriteMappings = getFavoriteMappings(context).toMutableList()
+                                    favoriteFiles = withContext(Dispatchers.IO) {
+                                        readFavoritesList(context).getOrElse { favoriteFiles }
+                                    }
+                                    snackbarHostState.showSnackbar(
+                                        "Conversion stopped: ${e.message ?: "Unknown error"}"
+                                    )
+                                } finally {
+                                    isConvertingFavoriteNames = false
+                                    favoriteFormatProgress = null
+                                }
+                            }
+                        }
+                    }
                 )
             }
 
@@ -2832,11 +2872,18 @@ fun PicRouletteApp(
 
                                             Button(
                                                 onClick = {
-                                                    renameBaseName =
-                                                        splitFileName(
-                                                            currentFileDetails
-                                                                .displayName
-                                                        ).stem
+                                                    val linked = if (isFavoritesMode) {
+                                                        currentFavoriteMapping
+                                                    } else {
+                                                        findActiveFavoriteMapping(
+                                                            favoriteMappings, currentUri.toString()
+                                                        ) { a, b -> sameImage(Uri.parse(a), Uri.parse(b)) }
+                                                    }
+                                                    renameBaseName = splitFileName(
+                                                        linked?.originalFileName
+                                                            ?.takeIf { it.isNotBlank() }
+                                                            ?: currentFileDetails.displayName
+                                                    ).stem
                                                     renameErrorMessage = null
                                                     showRenameDialog = true
                                                 },
@@ -2861,10 +2908,21 @@ fun PicRouletteApp(
                             }
 
                             if (showRenameDialog) {
-                                val currentNameParts =
-                                    splitFileName(
-                                        currentFileDetails.displayName
-                                    )
+                                val linkedMapping = if (isFavoritesMode) {
+                                    currentFavoriteMapping
+                                } else {
+                                    findActiveFavoriteMapping(
+                                        favoriteMappings, currentUri.toString()
+                                    ) { a, b -> sameImage(Uri.parse(a), Uri.parse(b)) }
+                                }
+                                val originalNameForDialog = linkedMapping?.originalFileName
+                                    ?.takeIf { it.isNotBlank() }
+                                    ?: currentFileDetails.displayName
+                                val currentNameParts = splitFileName(originalNameForDialog)
+                                val proposedOriginalName = renameBaseName.trim() +
+                                    (if (currentNameParts.extension.isNotBlank())
+                                        ".${currentNameParts.extension}" else "")
+                                val proposedFavoriteName = formattedFavoriteName(proposedOriginalName)
 
                                 AlertDialog(
                                     onDismissRequest = {
@@ -2881,6 +2939,11 @@ fun PicRouletteApp(
                                                     "type will stay the same."
                                             )
 
+                                            Spacer(Modifier.height(10.dp))
+                                            Text("Original: $originalNameForDialog")
+                                            if (linkedMapping != null) {
+                                                Text("Favorite: ${linkedMapping.favoriteFileName.ifBlank { "Linked favorite" }}")
+                                            }
                                             Spacer(Modifier.height(14.dp))
 
                                             OutlinedTextField(
@@ -2895,6 +2958,14 @@ fun PicRouletteApp(
                                                 modifier = Modifier.fillMaxWidth()
                                             )
 
+                                            if (linkedMapping != null) {
+                                                Spacer(Modifier.height(6.dp))
+                                                Text(
+                                                    "Favorite will become: $proposedFavoriteName",
+                                                    color = Color.Gray,
+                                                    fontSize = 13.sp
+                                                )
+                                            }
                                             if (
                                                 currentNameParts.extension
                                                     .isNotEmpty()
@@ -2926,9 +2997,7 @@ fun PicRouletteApp(
                                             onClick = {
                                                 val validation =
                                                     validateRenamedFileName(
-                                                        originalFileName =
-                                                            currentFileDetails
-                                                                .displayName,
+                                                        originalFileName = originalNameForDialog,
                                                         requestedStem =
                                                             renameBaseName
                                                     )
@@ -2947,141 +3016,104 @@ fun PicRouletteApp(
                                                     isRenaming = true
                                                     renameErrorMessage = null
 
-                                                    val oldUri = currentUri
-                                                    val renameResult =
-                                                        renamePhotoFile(
-                                                            context = context,
-                                                            uri = oldUri,
-                                                            newDisplayName =
-                                                                newDisplayName
-                                                        )
-
+                                                    val oldUri = if (isFavoritesMode && linkedMapping != null) {
+                                                        Uri.parse(linkedMapping.originalUri)
+                                                    } else currentUri
+                                                    if (isFavoritesMode && linkedMapping == null) {
+                                                        renameErrorMessage = "Original photo link is unavailable; repair favorites mapping first."
+                                                        isRenaming = false
+                                                        return@launch
+                                                    }
+                                                    val renameResult = renamePhotoFile(
+                                                        context, oldUri, newDisplayName
+                                                    )
                                                     if (renameResult.isSuccess) {
-                                                        val renamedUri =
-                                                            renameResult
-                                                                .renamedUri
-                                                                ?: oldUri
-
-                                                        val actualDisplayName =
-                                                            withContext(
-                                                                Dispatchers.IO
-                                                            ) {
-                                                                queryPhotoFileDetails(
-                                                                    context = context,
-                                                                    uri = renamedUri
-                                                                ).displayName
-                                                            }.takeUnless {
-                                                                it == "Unknown"
-                                                            } ?: newDisplayName
-
-                                                        if (
-                                                            currentIndex.intValue in
-                                                            activeSessionList.indices
-                                                        ) {
-                                                            activeSessionList[
-                                                                currentIndex.intValue
-                                                            ] = renamedUri
-                                                        }
-
-                                                        var mappingsChanged = false
-
-                                                        favoriteMappings =
-                                                            favoriteMappings.map { mapping ->
-                                                                if (isFavoritesMode) {
-                                                                    if (
-                                                                        mapping.favoriteUri ==
-                                                                        oldUri.toString()
-                                                                    ) {
-                                                                        mappingsChanged = true
-                                                                        mapping.copy(
-                                                                            favoriteUri =
-                                                                                renamedUri
-                                                                                    .toString()
-                                                                        )
-                                                                    } else {
-                                                                        mapping
-                                                                    }
-                                                                } else if (
-                                                                    sameImage(
-                                                                        Uri.parse(
-                                                                            mapping.originalUri
-                                                                        ),
-                                                                        oldUri
-                                                                    )
-                                                                ) {
-                                                                    mappingsChanged = true
-                                                                    mapping.copy(
-                                                                        originalUri =
-                                                                            renamedUri
-                                                                                .toString(),
-                                                                        originalFileName =
-                                                                            actualDisplayName,
-                                                                        originalRelativePath =
-                                                                            getOriginalRelativePath(
-                                                                                renamedUri
-                                                                            )
-                                                                    )
-                                                                } else {
-                                                                    mapping
-                                                                }
-                                                            }.toMutableList()
-
-                                                        if (mappingsChanged) {
-                                                            saveFavoriteMappings(
-                                                                context,
-                                                                favoriteMappings
+                                                        val renamedUri = renameResult.renamedUri ?: oldUri
+                                                        val actualDisplayName = withContext(Dispatchers.IO) {
+                                                            queryPhotoFileDetails(context, renamedUri).displayName
+                                                        }.takeUnless { it == "Unknown" } ?: newDisplayName
+                                                        withContext(Dispatchers.IO) {
+                                                            updateCatalogUriForRename(
+                                                                context, oldUri, renamedUri, actualDisplayName
                                                             )
                                                         }
-
-                                                        if (isFavoritesMode) {
-                                                            refreshFavs(context) {
-                                                                favoriteFiles = it
-                                                            }
-                                                        } else {
-                                                            pickedFolderImages.value =
-                                                                pickedFolderImages.value
-                                                                    .map { libraryUri ->
-                                                                        if (
-                                                                            sameImage(
-                                                                                libraryUri,
-                                                                                oldUri
-                                                                            )
-                                                                        ) {
-                                                                            renamedUri
-                                                                        } else {
-                                                                            libraryUri
+                                                        var favoriteError: String? = null
+                                                        favoriteMappings = favoriteMappings.map { mapping ->
+                                                            if (sameImage(Uri.parse(mapping.originalUri), oldUri)) {
+                                                                val newFavoriteUri = if (mapping.favoriteUri.isNotBlank()) {
+                                                                    val oldFavUri = Uri.parse(mapping.favoriteUri)
+                                                                    val takenNames = favoriteFiles
+                                                                        .filter { it.mediaUri.toString() != mapping.favoriteUri }
+                                                                        .map { it.fileNameOnDisk.lowercase(Locale.ROOT) }
+                                                                        .toSet()
+                                                                    val wanted = uniqueFavoriteName(
+                                                                        formattedFavoriteName(actualDisplayName), takenNames
+                                                                    )
+                                                                    val renamedFav = renamePhotoFile(
+                                                                        context, oldFavUri, wanted
+                                                                    )
+                                                                    if (renamedFav.isSuccess) {
+                                                                        val newFavUri = renamedFav.renamedUri ?: oldFavUri
+                                                                        withContext(Dispatchers.IO) {
+                                                                            updateCatalogUriForRename(context, oldFavUri, newFavUri, wanted)
                                                                         }
+                                                                        newFavUri.toString() to wanted
+                                                                    } else {
+                                                                        favoriteError = renamedFav.errorMessage ?: "Favorite copy could not be renamed"
+                                                                        mapping.favoriteUri to mapping.favoriteFileName
                                                                     }
-
-                                                            saveCachedPhotoLibrary(
-                                                                context = context,
-                                                                images =
-                                                                    pickedFolderImages
-                                                                        .value
-                                                            )
+                                                                } else mapping.favoriteUri to mapping.favoriteFileName
+                                                                mapping.copy(
+                                                                    originalUri = renamedUri.toString(),
+                                                                    originalFileName = actualDisplayName,
+                                                                    originalRelativePath = getOriginalRelativePath(renamedUri),
+                                                                    favoriteUri = newFavoriteUri.first,
+                                                                    favoriteFileName = newFavoriteUri.second
+                                                                )
+                                                            } else mapping
+                                                        }.toMutableList()
+                                                        saveFavoriteMappings(context, favoriteMappings)
+                                                        if (!isFavoritesMode && currentIndex.intValue in activeSessionList.indices) {
+                                                            activeSessionList[currentIndex.intValue] = renamedUri
                                                         }
-
+                                                        for (i in activeSessionSource.indices) {
+                                                            if (sameImage(activeSessionSource[i], oldUri)) {
+                                                                activeSessionSource[i] = renamedUri
+                                                            }
+                                                        }
+                                                        pickedFolderImages.value = pickedFolderImages.value.map { entry ->
+                                                            if (sameImage(entry, oldUri)) renamedUri else entry
+                                                        }
+                                                        saveCachedPhotoLibrary(context, pickedFolderImages.value)
+                                                        favoriteFiles = withContext(Dispatchers.IO) {
+                                                            readFavoritesList(context).getOrElse { favoriteFiles }
+                                                        }
+                                                        if (isFavoritesMode) {
+                                                            val replacement = favoriteMappings.firstOrNull { mapping ->
+                                                                (linkedMapping?.favoriteId?.isNotBlank() == true &&
+                                                                    mapping.favoriteId == linkedMapping.favoriteId) ||
+                                                                    (linkedMapping != null && mapping.originalUri == renamedUri.toString())
+                                                            }?.favoriteUri
+                                                            if (replacement != null && currentIndex.intValue in activeSessionList.indices) {
+                                                                activeSessionList[currentIndex.intValue] = Uri.parse(replacement)
+                                                            }
+                                                        }
                                                         metadataRefreshVersion++
                                                         showRenameDialog = false
-
-                                                        snackbarHostState
-                                                            .showSnackbar(
-                                                                "Renamed to " +
-                                                                    actualDisplayName
-                                                            )
+                                                        snackbarHostState.showSnackbar(
+                                                            if (favoriteError == null) "Renamed original and favorite" else
+                                                                "Original renamed; favorite rename failed: $favoriteError"
+                                                        )
                                                     } else {
-                                                        renameErrorMessage =
-                                                            renameResult.errorMessage
+                                                        renameErrorMessage = renameResult.errorMessage
                                                     }
-
                                                     isRenaming = false
                                                 }
                                             }
                                         ) {
                                             if (isRenaming) {
                                                 CircularProgressIndicator(
-                                                    modifier = Modifier.size(18.dp),
-                                                    strokeWidth = 2.dp
+                                                    modifier = Modifier.size(18.dp), strokeWidth = 2.dp
                                                 )
                                             } else {
                                                 Text("Rename")
@@ -3095,9 +3127,7 @@ fun PicRouletteApp(
                                                 showRenameDialog = false
                                                 renameErrorMessage = null
                                             }
-                                        ) {
-                                            Text("Cancel")
-                                        }
+                                        ) { Text("Cancel") }
                                     }
                                 )
                             }

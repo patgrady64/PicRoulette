@@ -96,7 +96,8 @@ fun ensureFavoriteFileIdentity(
     if (currentName.isBlank()) return favoriteUri to knownFileName
 
     val embeddedId = favoriteIdFromFileName(currentName)
-    if (embeddedId.equals(favoriteId, ignoreCase = true)) {
+    if (currentName.startsWith("FAV_", ignoreCase = true) ||
+        embeddedId.equals(favoriteId, ignoreCase = true)) {
         return favoriteUri to currentName
     }
 

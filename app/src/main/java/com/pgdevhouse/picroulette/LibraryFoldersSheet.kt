@@ -22,6 +22,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FolderCopy
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -53,7 +54,10 @@ fun LibraryFoldersSheet(
     onRemoveFolder: (FolderConfig) -> Unit,
     onRescan: () -> Unit,
     onFixFavoritesMapping: () -> Unit,
-    isFixingFavoritesMapping: Boolean
+    isFixingFavoritesMapping: Boolean,
+    onConvertFavorites: () -> Unit,
+    isConvertingFavorites: Boolean,
+    conversionProgress: FavoriteFormatProgress?
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss
@@ -166,7 +170,7 @@ fun LibraryFoldersSheet(
 
             OutlinedButton(
                 onClick = onFixFavoritesMapping,
-                enabled = !isScanning && !isFixingFavoritesMapping && folders.isNotEmpty(),
+                enabled = !isScanning && !isFixingFavoritesMapping && !isConvertingFavorites && folders.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 if (isFixingFavoritesMapping) {
@@ -187,6 +191,35 @@ fun LibraryFoldersSheet(
                         "Fixing favorites mapping…"
                     else
                         "Fix favorites mapping"
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedButton(
+                onClick = onConvertFavorites,
+                enabled = !isScanning && !isFixingFavoritesMapping && !isConvertingFavorites,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (isConvertingFavorites) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(Icons.Rounded.Refresh, contentDescription = null)
+                }
+                Spacer(modifier = Modifier.width(9.dp))
+                Text(if (isConvertingFavorites) "Converting favorites…" else "Convert to new format")
+            }
+            if (isConvertingFavorites && conversionProgress != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    progress = { conversionProgress.fraction },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                val eta = conversionProgress.etaSeconds()
+                Text(
+                    "${conversionProgress.completed} / ${conversionProgress.total} done" +
+                        (eta?.let { " · ETA ${it / 60}m ${it % 60}s" } ?: " · Calculating ETA…"),
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
 
