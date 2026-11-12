@@ -100,6 +100,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.pgdevhouse.picroulette.utils.FavoritesZipExportPhase
+import com.pgdevhouse.picroulette.utils.FavoritesZipExportProgress
+import com.pgdevhouse.picroulette.utils.PortableVerifyProgress
 import com.pgdevhouse.picroulette.utils.exportFavoritesZip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -174,6 +177,8 @@ fun PicRouletteApp(
     var isImportingFavorites by remember {
         mutableStateOf(false)
     }
+    var favoritesExportProgress by remember { mutableStateOf<FavoritesZipExportProgress?>(null) }
+    var portableVerifyProgress by remember { mutableStateOf<PortableVerifyProgress?>(null) }
     var pendingPortableZip by remember { mutableStateOf<Uri?>(null) }
     var portableRootUri by remember { mutableStateOf<Uri?>(null) }
     var portablePreview by remember { mutableStateOf<PortableRestorePreview?>(null) }
@@ -470,6 +475,9 @@ fun PicRouletteApp(
                  * favorite list/count overwrite it.
                  */
                 if (thisRefreshGeneration != favoritesRefreshGeneration) {
+                    // A newer refresh owns UI state, but this caller still needs
+                    // its completion callback (notably the restore dialog).
+                    onResult(favoriteFiles)
                     return@withContext
                 }
 
@@ -721,6 +729,8 @@ fun PicRouletteApp(
                 )
 
             isImportingFavorites = true
+            var lastRestoreProgressTime = 0L
+            var lastRestoreProgressPhase: FavoritesZipImportPhase? = null
 
             scope.launch {
                 val result = runCatching {
@@ -736,11 +746,12 @@ fun PicRouletteApp(
                                 sourceImagesSnapshot,
                             selectedRootUri = selectedRoot,
                             onProgress = { progress ->
-                                scope.launch {
-                                    if (isImportingFavorites) {
-                                        favoritesImportProgress =
-                                            progress
-                                    }
+                                val now = android.os.SystemClock.elapsedRealtime()
+                                val stageChanged = progress.phase != lastRestoreProgressPhase
+                                if (stageChanged || progress.completed == progress.total || now - lastRestoreProgressTime >= 150L) {
+                                    lastRestoreProgressPhase = progress.phase
+                                    lastRestoreProgressTime = now
+                                    scope.launch { if (isImportingFavorites) favoritesImportProgress = progress }
                                 }
                             }
                         )
@@ -753,8 +764,8 @@ fun PicRouletteApp(
                         FavoritesZipImportProgress(
                             phase =
                                 FavoritesZipImportPhase.FINISHING,
-                            completed = 1,
-                            total = 1,
+                            completed = 0,
+                            total = 0,
                             importedCount =
                                 importResult.importedCount,
                             skippedDuplicateCount =
@@ -771,10 +782,9 @@ fun PicRouletteApp(
                         loadAlbums(context)
                     }
 
-                    saveFavoriteMappings(
-                        context,
-                        favoriteMappings
-                    )
+                    withContext(Dispatchers.IO) {
+                        saveFavoriteMappings(context, importResult.updatedMappings)
+                    }
 
                     pendingFavoriteLinkReviews =
                         importResult.reviews
@@ -908,15 +918,20 @@ fun PicRouletteApp(
                 portableRootUri = uri
                 portablePreview = null
                 portablePreviewBusy = true
+                portablePreviewError = ""
+                portableVerifyProgress = PortableVerifyProgress("Opening selected folder")
                 val zip = pendingPortableZip
                 scope.launch {
                     val result = withContext(Dispatchers.IO) {
                         runCatching {
                             requireNotNull(zip)
-                            verifyPortableRestore(context, zip, uri)
+                            verifyPortableRestore(context, zip, uri) { progress ->
+                                scope.launch { portableVerifyProgress = progress }
+                            }
                         }
                     }
                     portablePreviewBusy = false
+                    portableVerifyProgress = null
                     result.onSuccess { portablePreview = it }
                         .onFailure { portablePreviewError = it.message ?: "Folder verification failed" }
                 }
@@ -1058,7 +1073,10 @@ fun PicRouletteApp(
             val mappingsSnapshot = favoriteMappings.toList()
             val albumsSnapshot = albums.toList()
 
+            favoritesExportProgress = FavoritesZipExportProgress(FavoritesZipExportPhase.PREPARING)
             isExportingFavorites = true
+            var lastExportProgressTime = 0L
+            var lastExportProgressPhase: FavoritesZipExportPhase? = null
 
             scope.launch {
                 val result = runCatching {
@@ -1070,12 +1088,22 @@ fun PicRouletteApp(
                             mappings = mappingsSnapshot,
                             albums = albumsSnapshot,
                             libraryRoots = folderConfigs.map { it.uri },
-                            libraryImages = pickedFolderImages.value.toList()
+                            libraryImages = pickedFolderImages.value.toList(),
+                            onProgress = { progress ->
+                                val now = android.os.SystemClock.elapsedRealtime()
+                                val stageChanged = progress.phase != lastExportProgressPhase
+                                if (stageChanged || progress.completed == progress.total || now - lastExportProgressTime >= 150L) {
+                                    lastExportProgressPhase = progress.phase
+                                    lastExportProgressTime = now
+                                    scope.launch { if (isExportingFavorites) favoritesExportProgress = progress }
+                                }
+                            }
                         )
                     }
                 }
 
                 isExportingFavorites = false
+                favoritesExportProgress = null
 
                 result.onSuccess { exportResult ->
                     val sizeMb =
@@ -1830,7 +1858,15 @@ fun PicRouletteApp(
                             }
                             if (portablePreviewBusy) {
                                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                                Text("Comparing folders and photos…")
+                                val progress = portableVerifyProgress
+                                Text(progress?.stage ?: "Opening photo library…")
+                                if (progress != null && (progress.foldersScanned > 0 || progress.photosScanned > 0)) {
+                                    Text("${progress.foldersScanned} folders • ${progress.photosScanned} photos checked")
+                                    if (progress.expectedPhotos > 0) {
+                                        Text("${progress.matchingPhotos} of ${progress.expectedPhotos} expected photo paths found so far")
+                                    }
+                                }
+                                Text("Still working — large libraries can take a while.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                             }
                             if (portablePreviewError.isNotBlank()) Text(portablePreviewError)
                             if (preview != null) {
@@ -4103,6 +4139,9 @@ fun PicRouletteApp(
         )
     }
 
+    if (isExportingFavorites) {
+        FavoritesExportProgressDialog(progress = favoritesExportProgress, themeColor = themeColor)
+    }
     if (isImportingFavorites) {
         FavoritesImportProgressDialog(
             progress = favoritesImportProgress,
@@ -4171,6 +4210,67 @@ private fun ViewerDisplayModeChoice(
     }
 }
 
+private fun formatTransferEta(milliseconds: Long): String {
+    val seconds = (milliseconds / 1000L).coerceAtLeast(1L)
+    return when {
+        seconds < 60L -> "About $seconds sec remaining"
+        seconds < 3600L -> "About ${(seconds + 59L) / 60L} min remaining"
+        else -> "About ${(seconds + 3599L) / 3600L} hr remaining"
+    }
+}
+
+@Composable
+private fun FavoritesExportProgressDialog(
+    progress: FavoritesZipExportProgress?,
+    themeColor: Color
+) {
+    val phase = progress?.phase ?: FavoritesZipExportPhase.PREPARING
+    val completed = progress?.completed ?: 0
+    val total = progress?.total ?: 0
+    val startedAt = remember(phase) { android.os.SystemClock.elapsedRealtime() }
+    val elapsed = android.os.SystemClock.elapsedRealtime() - startedAt
+    val eta = when {
+        total > 0 && completed >= 3 && completed < total && elapsed > 1500L ->
+            formatTransferEta((elapsed.toDouble() / completed * (total - completed)).toLong())
+        total > 0 && completed >= total -> "Finishing this step…"
+        else -> "Estimating time remaining…"
+    }
+    val label = when (phase) {
+        FavoritesZipExportPhase.PREPARING -> "Preparing backup"
+        FavoritesZipExportPhase.COPYING_FAVORITES -> "Saving favorite images"
+        FavoritesZipExportPhase.SAVING_LIBRARY_INDEX -> "Saving photo folder information"
+        FavoritesZipExportPhase.SAVING_ALBUMS -> "Saving albums and memberships"
+        FavoritesZipExportPhase.FINALIZING -> "Writing backup manifest and finishing ZIP"
+    }
+    AlertDialog(
+        onDismissRequest = { },
+        title = { Text("Creating PicRoulette backup", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)) {
+                Text(label, fontWeight = FontWeight.SemiBold)
+                if (total > 0) {
+                    LinearProgressIndicator(
+                        progress = { (completed.toFloat() / total).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("$completed / $total items • ${(completed * 100 / total)}%", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                Text(eta, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                if (!progress?.currentFileName.isNullOrBlank()) {
+                    Text(progress!!.currentFileName, maxLines = 2, style = MaterialTheme.typography.bodySmall)
+                }
+                val written = (progress?.copiedBytes ?: 0L) + (progress?.activeFileBytes ?: 0L)
+                Text("${"%.1f".format(Locale.US, written / (1024.0 * 1024.0))} MB copied • ${progress?.failedCount ?: 0} failed", style = MaterialTheme.typography.bodySmall)
+                Text("Backup is running. Keep PicRoulette open until it finishes.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            }
+        },
+        confirmButton = { },
+        containerColor = MaterialTheme.colorScheme.surface
+    )
+}
+
 @Composable
 private fun FavoritesImportProgressDialog(
     progress: FavoritesZipImportProgress?,
@@ -4183,12 +4283,21 @@ private fun FavoritesImportProgressDialog(
     val total = progress?.total ?: 0
 
     val fraction =
-        if (total > 0) {
+        if (phase != FavoritesZipImportPhase.FINISHING && total > 0) {
             (completed.toFloat() / total.toFloat())
                 .coerceIn(0f, 1f)
         } else {
             null
         }
+
+    val phaseStartedAt = remember(phase) { android.os.SystemClock.elapsedRealtime() }
+    val etaText = if (total > 0 && completed >= 3 && completed < total) {
+        val elapsed = android.os.SystemClock.elapsedRealtime() - phaseStartedAt
+        if (elapsed >= 2000L) {
+            val remaining = (elapsed.toDouble() / completed * (total - completed)).toLong()
+            formatTransferEta(remaining)
+        } else "Estimating time remaining…"
+    } else if (total > 0 && completed >= total) "Finishing this step…" else "Calculating progress…"
 
     val statusText = when (phase) {
         FavoritesZipImportPhase.READING_BACKUP -> {
@@ -4239,8 +4348,14 @@ private fun FavoritesImportProgressDialog(
             }
         }
 
+        FavoritesZipImportPhase.RESTORING_ALBUMS -> {
+            if (total > 0) "Restoring album photos • $completed of $total" else "Restoring albums"
+        }
+        FavoritesZipImportPhase.RELINKING_ALBUMS -> {
+            if (total > 0) "Checking album links • $completed of $total" else "Checking album links"
+        }
         FavoritesZipImportPhase.FINISHING -> {
-            "Finishing import"
+            "Saving restored data and refreshing favorites"
         }
     }
 
@@ -4321,6 +4436,13 @@ private fun FavoritesImportProgressDialog(
                             MaterialTheme.typography.bodySmall
                     )
                 }
+
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = if (total > 0) "$completed / $total items • $etaText" else "Still working • $etaText",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.Gray
+                )
 
                 val currentFileName =
                     progress?.currentFileName.orEmpty()

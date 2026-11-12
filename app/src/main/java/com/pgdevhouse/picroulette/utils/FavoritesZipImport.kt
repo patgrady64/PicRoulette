@@ -59,6 +59,8 @@ enum class FavoritesZipImportPhase {
     PREPARING_SOURCE_LIBRARY,
     RESTORING_LINKS,
     COMPARING_SOURCE_PHOTOS,
+    RESTORING_ALBUMS,
+    RELINKING_ALBUMS,
     FINISHING
 }
 
@@ -545,12 +547,19 @@ fun importFavoritesZip(
         originalRoots = manifest.originalRoots,
         selectedRootUri = selectedRootUri,
         restoredFavorites = restoredArchiveFavorites,
-        restoredMappings = linkResult.updatedMappings
+        restoredMappings = linkResult.updatedMappings,
+        onProgress = { completed, total, detail ->
+            reportProgress(FavoritesZipImportPhase.RESTORING_ALBUMS, completed, total, detail)
+        }
     )
 
+    reportProgress(FavoritesZipImportPhase.RELINKING_ALBUMS, 0, linkResult.updatedMappings.size)
     relinkFavoriteAlbumMembershipsToOriginals(
         context = context,
-        mappings = linkResult.updatedMappings
+        mappings = linkResult.updatedMappings,
+        onProgress = { completed, total ->
+            reportProgress(FavoritesZipImportPhase.RELINKING_ALBUMS, completed, total)
+        }
     )
 
     reportProgress(
@@ -1376,8 +1385,11 @@ private fun restoreAlbums(
     originalRoots: List<String>,
     selectedRootUri: Uri?,
     restoredFavorites: List<RestoredArchiveFavorite>,
-    restoredMappings: MutableList<FavoriteMapping>
+    restoredMappings: MutableList<FavoriteMapping>,
+    onProgress: (Int, Int, String) -> Unit = { _, _, _ -> }
 ): Triple<Int, Int, Int> {
+    val totalPhotos = albums.sumOf { it.photos.size }
+    onProgress(0, totalPhotos, "Preparing albums")
     if (albums.isEmpty()) return Triple(0, 0, 0)
 
     val dao = PicRouletteDatabase.get(context).albumDao()
@@ -1514,6 +1526,7 @@ private fun restoreAlbums(
 
     var memberships = 0
     var unresolved = 0
+    var processedAlbumPhotos = 0
 
     albums.forEach { album ->
         dao.putAlbum(
@@ -1699,6 +1712,10 @@ private fun restoreAlbums(
                         saved = saved
                     )
                 }
+            }
+            processedAlbumPhotos++
+            if (processedAlbumPhotos % 10 == 0 || processedAlbumPhotos == totalPhotos) {
+                onProgress(processedAlbumPhotos, totalPhotos, album.name)
             }
         }
     }

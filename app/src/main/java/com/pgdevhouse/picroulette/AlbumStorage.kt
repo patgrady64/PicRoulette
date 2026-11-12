@@ -423,22 +423,27 @@ fun loadAlbums(
  */
 fun relinkFavoriteAlbumMembershipsToOriginals(
     context: Context,
-    mappings: List<FavoriteMapping>
+    mappings: List<FavoriteMapping>,
+    onProgress: (Int, Int) -> Unit = { _, _ -> }
 ): Int {
     val database = PicRouletteDatabase.get(context)
     val dao = database.albumDao()
     var movedMemberships = 0
 
-    mappings.forEach { mapping ->
+    onProgress(0, mappings.size)
+    mappings.forEachIndexed { index, mapping ->
+        if (index % 10 == 0 || index == mappings.lastIndex) {
+            onProgress(index + 1, mappings.size)
+        }
         if (
             mapping.isDeleted ||
             mapping.photoId.isBlank() ||
             mapping.favoriteUri.isBlank()
         ) {
-            return@forEach
+            return@forEachIndexed
         }
 
-        val originalPhoto = dao.photoById(mapping.photoId) ?: return@forEach
+        val originalPhoto = dao.photoById(mapping.photoId) ?: return@forEachIndexed
 
         /*
          * Keep the favorite-copy fallback in the album while the original is
@@ -452,17 +457,17 @@ fun relinkFavoriteAlbumMembershipsToOriginals(
         }.getOrDefault(false)
 
         if (!originalIsReadable) {
-            return@forEach
+            return@forEachIndexed
         }
 
         val favoritePhoto = dao.photoByCurrentUri(mapping.favoriteUri)
             ?: runCatching {
                 ensureCatalogPhoto(context, Uri.parse(mapping.favoriteUri))
             }.getOrNull()
-            ?: return@forEach
+            ?: return@forEachIndexed
 
         if (favoritePhoto.id == originalPhoto.id) {
-            return@forEach
+            return@forEachIndexed
         }
 
         database.runInTransaction {
