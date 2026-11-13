@@ -8,6 +8,9 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -25,12 +28,14 @@ data class ExternalImageRequest(
 
 class MainActivity : ComponentActivity() {
     private var isAppReady = false
+    private var selectedTheme by mutableStateOf(PicRouletteThemeMode.DARK)
     private val externalImageRequest = mutableStateOf<ExternalImageRequest?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
 
+        selectedTheme = getPicRouletteThemeMode(this)
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         captureExternalImageRequest(intent)
 
@@ -42,19 +47,39 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { delay(800); isAppReady = true }
         setContent {
             val rouletteYellow = Color(0xFFFFD700)
-            MaterialTheme(
-                colorScheme = darkColorScheme(
+            val darkTheme = when (selectedTheme) {
+                PicRouletteThemeMode.DARK -> true
+                PicRouletteThemeMode.LIGHT -> false
+                PicRouletteThemeMode.SYSTEM -> isSystemInDarkTheme()
+            }
+            val scheme = if (darkTheme) {
+                darkColorScheme(
                     primary = rouletteYellow,
                     surface = Color(0xFF0A0A0A),
                     background = Color(0xFF0A0A0A)
                 )
-            ) {
+            } else {
+                lightColorScheme(
+                    primary = Color(0xFF5E3DAA),
+                    onPrimary = Color.White,
+                    surface = Color(0xFFFFFFFF),
+                    background = Color(0xFFF7F5FA),
+                    surfaceVariant = Color(0xFFECE8F1),
+                    onSurfaceVariant = Color(0xFF514D59)
+                )
+            }
+            MaterialTheme(colorScheme = scheme) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = Color(0xFF0A0A0A)
+                    color = scheme.background
                 ) {
                     PicRouletteApp(
-                        themeColor = rouletteYellow,
+                        themeColor = if (darkTheme) rouletteYellow else Color(0xFF5E3DAA),
+                        selectedTheme = selectedTheme,
+                        onThemeChanged = { mode ->
+                            selectedTheme = mode
+                            setPicRouletteThemeMode(this@MainActivity, mode)
+                        },
                         externalImageRequest = externalImageRequest.value,
                         onExternalImageRequestConsumed = {
                             externalImageRequest.value = null

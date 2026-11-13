@@ -130,7 +130,10 @@ fun PhotoFilenameSearchSheet(
 
     AlertDialog(
         onDismissRequest = { requestDismiss() },
-        title = { Text("Search Photos") },
+        title = { Column {
+            Text("Search Photos")
+            Text("Find filenames and open matches in a roulette", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
@@ -147,7 +150,7 @@ fun PhotoFilenameSearchSheet(
                     Text("Case sensitive", style = MaterialTheme.typography.bodyMedium)
                     Switch(checked = caseSensitive, onCheckedChange = { caseSensitive = it })
                 }
-                Text("Search in", style = MaterialTheme.typography.labelMedium)
+                Text("1  •  Where to search", style = MaterialTheme.typography.titleSmall)
                 SearchLocation.entries.forEach { option ->
                     Row(
                         modifier = Modifier.fillMaxWidth().clickable { location = option }.padding(vertical = 3.dp),
@@ -157,6 +160,7 @@ fun PhotoFilenameSearchSheet(
                         Text(option.title)
                     }
                 }
+                Text("2  •  Find matching filenames", style = MaterialTheme.typography.titleSmall)
                 Button(
                     onClick = {
                         if (searched) {
@@ -174,20 +178,20 @@ fun PhotoFilenameSearchSheet(
                 ) {
                     Text(when {
                         busy -> "Searching…"
-                        searched -> "Show (${results.size})"
+                        searched -> "Show ${results.size} Photos in Roulette"
                         else -> "Search"
                     })
                 }
                 if (busy || searched) {
                     LinearProgressIndicator(
-                        progress = { if (totalCount == 0) 0f else checkedCount.toFloat() / totalCount },
+                        progress = { if (totalCount == 0) 0f else checkedCount.toFloat() / totalCount.coerceAtLeast(1) },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
                 Text(
                     when {
                         busy -> "${results.size} found, $checkedCount of $totalCount searched"
-                        searched -> "${results.size} found, $checkedCount searched"
+                        searched -> "Search complete: ${results.size} matches from $checkedCount photos. Tap Show or select a result."
                         else -> "Enter part of a filename, then tap Search."
                     },
                     style = MaterialTheme.typography.bodySmall
@@ -200,7 +204,7 @@ fun PhotoFilenameSearchSheet(
                             }.padding(vertical = 8.dp)
                         ) {
                             Text(match.filename, style = MaterialTheme.typography.bodyMedium)
-                            Text(match.group, style = MaterialTheme.typography.bodySmall)
+                            Text(match.group, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         HorizontalDivider()
                     }

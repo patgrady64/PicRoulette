@@ -47,10 +47,6 @@ import androidx.compose.ui.unit.sp
 import java.text.NumberFormat
 import java.util.Locale
 
-private val HomeBackground = Color(0xFF09070D)
-private val HomeSurface = Color(0xFF15111C)
-private val HomeSurfaceRaised = Color(0xFF1B1624)
-private val MutedText = Color(0xFFAAA3B3)
 
 @Composable
 fun PicRouletteHomeScreen(
@@ -82,14 +78,14 @@ fun PicRouletteHomeScreen(
     LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .background(HomeBackground),
+            .background(MaterialTheme.colorScheme.background),
         contentPadding = PaddingValues(
             start = 20.dp,
             top = 18.dp,
             end = 20.dp,
             bottom = 32.dp
         ),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
             HomeHeader(
@@ -99,6 +95,7 @@ fun PicRouletteHomeScreen(
             )
         }
 
+        // Keep the original Start Roulette card first, at its original full size.
         item {
             StartRouletteCard(
                 themeColor = themeColor,
@@ -114,16 +111,6 @@ fun PicRouletteHomeScreen(
         }
 
         item {
-            HomeMenuRow(
-                title = "Library Folders",
-                subtitle = if (folderCount == 1) "1 source folder" else "$folderCount source folders",
-                icon = Icons.Rounded.FolderCopy,
-                accentColor = Color(0xFFB79CFF),
-                onClick = onOpenFolders
-            )
-        }
-
-        item {
             LibrarySummaryRow(
                 photoCount = if (isScanning) scanPhotosFound else photoCount,
                 favoriteCount = favoriteCount,
@@ -132,15 +119,7 @@ fun PicRouletteHomeScreen(
             )
         }
 
-        item {
-            Text(
-                text = "Your library",
-                color = Color.White,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
+        item { HomeSectionHeading("Explore", "Choose how to rediscover your photos") }
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -155,43 +134,59 @@ fun PicRouletteHomeScreen(
                     enabled = favoriteCount > 0 || albumCount > 0,
                     onClick = onOpenRouletteCollection
                 )
-
                 HomeActionTile(
                     modifier = Modifier.weight(1f),
-                    title = if (isPro) "Albums · Pro" else "Albums · Pro",
-                    subtitle = if (isPro) {
-                        if (albumCount == 1) "1 album" else "$albumCount albums"
-                    } else {
-                        "Unlock custom collections"
-                    },
-                    icon = Icons.Rounded.PhotoAlbum,
+                    title = "Smart Filters",
+                    subtitle = if (isPro) "Date and favorites" else "Pro feature",
+                    icon = Icons.Rounded.Settings,
                     accentColor = Color(0xFFB79CFF),
                     enabled = true,
-                    onClick = onOpenAlbums
+                    onClick = onOpenSmartRoulette
                 )
             }
         }
-
-
         item {
-            Text(
-                text = "Pro Roulette",
-                color = Color.White,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+            HomeMenuRow(
+                title = "Roulette History",
+                subtitle = if (isPro) "Return to recently shown photos" else "Pro feature · Recently shown photos",
+                icon = Icons.Rounded.Refresh,
+                accentColor = Color(0xFF55D6C2),
+                onClick = onOpenRouletteHistory
             )
         }
 
+        item { HomeSectionHeading("Find & organize", "Search, collections, and photo folders") }
         item {
             HomeMenuRow(
                 title = "Search Photos",
-                subtitle = "Search filenames in folders, albums or favorites",
+                subtitle = "Find images by filename across your library",
                 icon = Icons.Rounded.Search,
                 accentColor = Color(0xFF55D6C2),
                 onClick = onSearchPhotos
             )
         }
-
+        item {
+            HomeMenuRow(
+                title = "Albums",
+                subtitle = if (isPro) {
+                    if (albumCount == 1) "1 album · Organize your photos" else "$albumCount albums · Organize your photos"
+                } else {
+                    "Pro feature · Organize your photos"
+                },
+                icon = Icons.Rounded.PhotoAlbum,
+                accentColor = Color(0xFFB79CFF),
+                onClick = onOpenAlbums
+            )
+        }
+        item {
+            HomeMenuRow(
+                title = "Library Folders",
+                subtitle = if (folderCount == 1) "1 source folder · Manage photo locations" else "$folderCount source folders · Manage photo locations",
+                icon = Icons.Rounded.FolderCopy,
+                accentColor = Color(0xFFB79CFF),
+                onClick = onOpenFolders
+            )
+        }
         item {
             HomeMenuRow(
                 title = "Duplicate Finder",
@@ -202,60 +197,43 @@ fun PicRouletteHomeScreen(
             )
         }
 
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                HomeActionTile(
-                    modifier = Modifier.weight(1f),
-                    title = "Smart Filters",
-                    subtitle = if (isPro) "Date and favorites filters" else "Pro feature",
-                    icon = Icons.Rounded.Settings,
-                    accentColor = Color(0xFFB79CFF),
-                    enabled = true,
-                    onClick = onOpenSmartRoulette
-                )
-                HomeActionTile(
-                    modifier = Modifier.weight(1f),
-                    title = "History",
-                    subtitle = if (isPro) "Recently shown photos" else "Pro feature",
-                    icon = Icons.Rounded.Refresh,
-                    accentColor = Color(0xFF55D6C2),
-                    enabled = true,
-                    onClick = onOpenRouletteHistory
-                )
-            }
-        }
-
-        item {
-            Text(
-                text = "App",
-                color = Color.White,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
+        item { HomeSectionHeading("Preferences & help", "Customize PicRoulette and manage your data") }
         item {
             HomeMenuRow(
                 title = "Options",
-                subtitle = "Viewer, scanning, haptics, backup, and restore",
+                subtitle = "Appearance, backup & restore, viewer settings",
                 icon = Icons.Rounded.Settings,
                 accentColor = Color(0xFFB79CFF),
                 onClick = onOpenOptions
             )
         }
-
         item {
             HomeMenuRow(
-                title = "About",
+                title = "About & Support",
                 subtitle = "App information, website, and support",
                 icon = Icons.Rounded.Info,
                 accentColor = Color(0xFF55D6C2),
                 onClick = onOpenAboutSupport
             )
         }
+    }
+}
+
+
+@Composable
+private fun HomeSectionHeading(title: String, subtitle: String) {
+    Column(modifier = Modifier.padding(top = 9.dp, bottom = 1.dp)) {
+        Text(
+            text = title,
+            color = MaterialTheme.colorScheme.onSurface,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = subtitle,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall
+        )
     }
 }
 
@@ -296,7 +274,7 @@ private fun HomeHeader(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = "PicRoulette",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Black
             )
@@ -307,14 +285,14 @@ private fun HomeHeader(
                 } else {
                     "Rediscover the photos you forgot"
                 },
-                color = MutedText,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall
             )
         }
 
         Surface(
             shape = CircleShape,
-            color = HomeSurfaceRaised
+            color = MaterialTheme.colorScheme.surfaceVariant
         ) {
             IconButton(
                 onClick = onRefresh,
@@ -330,7 +308,7 @@ private fun HomeHeader(
                     Icon(
                         imageVector = Icons.Rounded.Refresh,
                         contentDescription = "Refresh photo library",
-                        tint = Color.White
+                        tint = MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
@@ -495,7 +473,7 @@ private fun LibrarySummaryRow(
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        color = HomeSurface,
+        color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(24.dp)
     ) {
         Row(
@@ -548,7 +526,7 @@ private fun LibraryStat(
 
         Text(
             text = label,
-            color = MutedText,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.labelMedium
         )
     }
@@ -568,7 +546,7 @@ private fun HomeActionTile(
         onClick = onClick,
         enabled = enabled,
         modifier = modifier.height(148.dp),
-        color = if (enabled) HomeSurfaceRaised else HomeSurface,
+        color = if (enabled) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(26.dp)
     ) {
         Column(
@@ -593,14 +571,14 @@ private fun HomeActionTile(
             Column {
                 Text(
                     text = title,
-                    color = Color.White.copy(alpha = if (enabled) 1f else 0.45f),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.45f),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
 
                 Text(
                     text = subtitle,
-                    color = MutedText.copy(alpha = if (enabled) 1f else 0.5f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 1f else 0.5f),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -619,7 +597,7 @@ private fun HomeMenuRow(
     Surface(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
-        color = HomeSurface,
+        color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(22.dp)
     ) {
         Row(
@@ -646,14 +624,14 @@ private fun HomeMenuRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.titleSmall
                 )
 
                 Text(
                     text = subtitle,
-                    color = MutedText,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall
                 )
             }

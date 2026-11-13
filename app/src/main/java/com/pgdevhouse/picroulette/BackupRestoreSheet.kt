@@ -17,6 +17,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -52,6 +57,7 @@ fun BackupRestoreSheet(
     onImport: () -> Unit,
     onRepair: () -> Unit
 ) {
+    var showRepairTools by remember { mutableStateOf(false) }
     ModalBottomSheet(
         onDismissRequest = onDismiss
     ) {
@@ -74,7 +80,7 @@ fun BackupRestoreSheet(
             Spacer(modifier = Modifier.height(5.dp))
 
             Text(
-                text = "Protect your edited favorite copies, original-photo links, albums, and album memberships.",
+                text = "Save your favorites, their zoomed crops, albums, and photo links. Restore them even if your pictures have moved to a new phone.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.Gray
             )
@@ -90,8 +96,8 @@ fun BackupRestoreSheet(
             Spacer(modifier = Modifier.height(14.dp))
 
             BackupActionCard(
-                title = "Create a backup",
-                description = "Exports every saved favorite exactly as it appears, plus portable original-photo metadata and albums.",
+                title = "1. Back up your library",
+                description = "Includes the actual saved favorite images, folder structure, original-photo links, and album memberships. Original full-size photos are not copied.",
                 accentColor = themeColor
             ) {
                 Button(
@@ -115,7 +121,7 @@ fun BackupRestoreSheet(
                             contentDescription = null
                         )
                         Spacer(modifier = Modifier.width(9.dp))
-                        Text("Export backup")
+                        Text("Create backup")
                     }
                 }
             }
@@ -123,8 +129,8 @@ fun BackupRestoreSheet(
             Spacer(modifier = Modifier.height(12.dp))
 
             BackupActionCard(
-                title = "Restore from a backup",
-                description = "Imports missing favorites and restores albums without replacing or duplicating favorites already present.",
+                title = "2. Restore on this phone or a new one",
+                description = "Choose a backup, select where your original pictures are stored, and review missing folders before restoring.",
                 accentColor = Color(0xFF57D5C7)
             ) {
                 OutlinedButton(
@@ -147,13 +153,34 @@ fun BackupRestoreSheet(
                             contentDescription = null
                         )
                         Spacer(modifier = Modifier.width(9.dp))
-                        Text("Import favorites backup")
+                        Text("Choose backup to restore")
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text("While a transfer is running", fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "You can leave this screen or turn off the display. The Android notification shows progress, and you can return to PicRoulette to see the current stage.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            TextButton(onClick = { showRepairTools = !showRepairTools }) {
+                Text(if (showRepairTools) "Hide advanced repair tools ▲" else "Advanced repair tools ▼")
+            }
+            if (showRepairTools) {
             BackupActionCard(
                 title = "Repair original-photo links",
                 description = when {
@@ -226,6 +253,7 @@ fun BackupRestoreSheet(
                 }
             }
 
+            }
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
@@ -296,7 +324,7 @@ private fun BackupActionCard(
 ) {
     Surface(
         shape = RoundedCornerShape(22.dp),
-        color = Color.White.copy(alpha = 0.055f),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(

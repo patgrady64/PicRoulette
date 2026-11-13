@@ -10,6 +10,9 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.PhotoAlbum
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -40,6 +43,8 @@ fun AddToAlbumsSheet(
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {
             Text("Add to Albums", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(4.dp))
+            Text("Select an album to add or remove this photo.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.height(8.dp))
             if (albums.isEmpty()) Text("Create your first album for this photo.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             albums.forEach { album ->
@@ -89,48 +94,85 @@ fun AlbumsBrowserSheet(
     var editName by remember { mutableStateOf("") }
     var deleting by remember { mutableStateOf<PhotoAlbum?>(null) }
     var resolvingAlbumId by remember { mutableStateOf<String?>(null) }
+    var albumQuery by remember { mutableStateOf("") }
+    var albumSort by remember { mutableStateOf(AlbumSortMode.NAME) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // Counts are provided by the existing Room-backed album membership store.
+    // The list uses a stable snapshot for sorting; no membership records are modified.
+    val visibleAlbums = remember(albums, albumQuery, albumSort) {
+        val matching = albums.filter { it.name.contains(albumQuery.trim(), ignoreCase = true) }
+        when (albumSort) {
+            AlbumSortMode.NAME -> matching.sortedBy { it.name.lowercase() }
+            AlbumSortMode.NEWEST -> matching.sortedByDescending { it.createdAt }
+        }
+    }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().fillMaxHeight(0.88f).padding(horizontal = 20.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Albums", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
-                TextButton(onClick = { creating = true }) { Icon(Icons.Rounded.Add, null); Text(" New") }
-            }
-            LazyColumn(Modifier.weight(1f)) {
-                items(albums, key = { it.id }) { album ->
-                    // Album v2 membership is authoritative. Do not hide saved members just because
-                    // their current SAF URI is absent from the in-memory library snapshot.
-                    val memberCount = albumMembershipCount(context, album.id)
-                    AlbumBrowserRow(
-                        name = album.name,
-                        count = memberCount,
-                        enabled = memberCount > 0 && resolvingAlbumId == null,
-                        isLoading = resolvingAlbumId == album.id,
-                        onPlay = {
-                            if (resolvingAlbumId == null) {
-                                resolvingAlbumId = album.id
-                                scope.launch {
-                                    val photos = withContext(Dispatchers.IO) {
-                                        resolveAlbumPhotos(
-                                            context = context,
-                                            albumId = album.id,
-                                            scannedPhotos = allPhotos
-                                        )
-                                    }
-                                    resolvingAlbumId = null
-                                    onPlay(photos)
-                                }
-                            }
-                        },
-                        onEdit = {
-                            editing = album
-                            editName = album.name
-                        },
-                        onDelete = { deleting = album }
-                    )
+                Column(Modifier.weight(1f)) {
+                    Text("Albums", style = MaterialTheme.typography.headlineSmall)
+                    Text("${albums.size} ${if (albums.size == 1) "album" else "albums"} · Organize your photos", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
                 }
-                if (albums.isEmpty()) item { Text("No albums yet. Create one, then add photos while using Roulette.", modifier = Modifier.padding(vertical = 24.dp)) }
+                FilledTonalButton(onClick = { creating = true }) {
+                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("New")
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = albumQuery,
+                onValueChange = { albumQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
+                label = { Text("Find an album") }
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Rounded.Sort, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                FilterChip(selected = albumSort == AlbumSortMode.NAME, onClick = { albumSort = AlbumSortMode.NAME }, label = { Text("Name") })
+                FilterChip(selected = albumSort == AlbumSortMode.NEWEST, onClick = { albumSort = AlbumSortMode.NEWEST }, label = { Text("Recently added") })
+            }
+            Spacer(Modifier.height(4.dp))
+            LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(visibleAlbums, key = { it.id }) { album ->
+                    // Album v2 membership remains authoritative, including entries whose SAF URI changes.
+                    val memberCount = albumMembershipCount(context, album.id)
+                    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                        Box(Modifier.padding(horizontal = 10.dp, vertical = 2.dp)) {
+                            AlbumBrowserRow(
+                                name = album.name,
+                                count = memberCount,
+                                enabled = memberCount > 0 && resolvingAlbumId == null,
+                                isLoading = resolvingAlbumId == album.id,
+                                onPlay = {
+                                    if (resolvingAlbumId == null) {
+                                        resolvingAlbumId = album.id
+                                        scope.launch {
+                                            try {
+                                                val photos = withContext(Dispatchers.IO) {
+                                                    resolveAlbumPhotos(context = context, albumId = album.id, scannedPhotos = allPhotos)
+                                                }
+                                                onPlay(photos)
+                                            } finally {
+                                                resolvingAlbumId = null
+                                            }
+                                        }
+                                    }
+                                },
+                                onEdit = { editing = album; editName = album.name },
+                                onDelete = { deleting = album }
+                            )
+                        }
+                    }
+                }
+                if (albums.isEmpty()) item {
+                    Text("No albums yet. Create one, then add photos while using Roulette.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 24.dp))
+                } else if (visibleAlbums.isEmpty()) item {
+                    Text("No albums match your search.", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 24.dp))
+                }
             }
         }
     }
@@ -138,6 +180,8 @@ fun AlbumsBrowserSheet(
     editing?.let { album -> AlertDialog(onDismissRequest = { editing = null }, title = { Text("Rename Album") }, text = { OutlinedTextField(editName, { editName = it }, singleLine = true) }, confirmButton = { TextButton(onClick = { if (editName.isNotBlank()) { onRename(album.id, editName); editing = null } }) { Text("Rename") } }, dismissButton = { TextButton(onClick = { editing = null }) { Text("Cancel") } }) }
     deleting?.let { album -> AlertDialog(onDismissRequest = { deleting = null }, title = { Text("Delete ${album.name}?") }, text = { Text("The album will be deleted. Your photos will not be deleted.") }, confirmButton = { TextButton(onClick = { onDelete(album.id); deleting = null }) { Text("Delete", color = Color.Red) } }, dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } }) }
 }
+
+private enum class AlbumSortMode { NAME, NEWEST }
 
 private fun albumMonogramColor(name: String): Color {
     val initial = name.trim().firstOrNull()?.uppercaseChar() ?: '?'
@@ -165,10 +209,11 @@ private fun AlbumBrowserRow(
     onEdit: (() -> Unit)?,
     onDelete: (() -> Unit)?,
     isLoading: Boolean = false,
-    hidePlayButtonWhileLoading: Boolean = false
+    hidePlayButtonWhileLoading: Boolean = false,
+    isFavorites: Boolean = false
 ) {
     val initial = name.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?"
-    val tileColor = albumMonogramColor(name)
+    val tileColor = if (isFavorites) Color(0xFFAA2758) else albumMonogramColor(name)
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(
             modifier = Modifier
@@ -179,12 +224,16 @@ private fun AlbumBrowserRow(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            Text(
-                text = initial,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = albumMonogramTextColor(tileColor)
-            )
+            if (isFavorites) {
+                Icon(Icons.Rounded.Favorite, contentDescription = null, tint = Color.White, modifier = Modifier.size(27.dp))
+            } else {
+                Text(
+                    text = initial,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = albumMonogramTextColor(tileColor)
+                )
+            }
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) { Text(name, style = MaterialTheme.typography.titleMedium); Text(if (count == 1) "1 photo" else "$count photos", color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -245,7 +294,10 @@ fun RouletteCollectionSheet(
             )
             LazyColumn(Modifier.weight(1f)) {
                 item {
-                    AlbumBrowserRow(
+                    Text("YOUR FAVORITES", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp, bottom = 4.dp))
+                    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                        Box(Modifier.padding(horizontal = 10.dp, vertical = 2.dp)) {
+                            AlbumBrowserRow(
                         name = "Favorites",
                         count = favoriteCount,
                         enabled = favoriteCount > 0 && !isFavoritesLoading,
@@ -253,10 +305,16 @@ fun RouletteCollectionSheet(
                         onEdit = null,
                         onDelete = null,
                         isLoading = isFavoritesLoading,
-                        hidePlayButtonWhileLoading = true
-                    )
+                        hidePlayButtonWhileLoading = true,
+                        isFavorites = true
+                            )
+                        }
+                    }
                 }
                 if (isPro) {
+                    if (albums.isNotEmpty()) item {
+                        Text("YOUR ALBUMS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
+                    }
                     items(albums, key = { "roulette_${it.id}" }) { album ->
                         // Use the Room-backed album membership directly. Filtering by exact URI
                         // made valid members disappear when Android exposed the same photo through

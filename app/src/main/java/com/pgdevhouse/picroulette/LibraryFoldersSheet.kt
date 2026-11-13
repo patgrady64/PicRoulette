@@ -22,6 +22,8 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.FolderCopy
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -34,6 +36,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -59,6 +65,7 @@ fun LibraryFoldersSheet(
     isConvertingFavorites: Boolean,
     conversionProgress: FavoriteFormatProgress?
 ) {
+    var showAdvancedTools by remember { mutableStateOf(false) }
     ModalBottomSheet(
         onDismissRequest = onDismiss
     ) {
@@ -82,7 +89,7 @@ fun LibraryFoldersSheet(
             Text(
                 text = "Choose the folders PicRoulette searches when building your photo library.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color.Gray
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Spacer(modifier = Modifier.height(18.dp))
@@ -117,7 +124,7 @@ fun LibraryFoldersSheet(
                                     ?.let { "Scanning $it" }
                                     ?: "Scanning your selected folders",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -126,6 +133,12 @@ fun LibraryFoldersSheet(
                 Spacer(modifier = Modifier.height(14.dp))
             }
 
+            Text("PHOTO SOURCES", style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("${folders.size} ${if (folders.size == 1) "folder" else "folders"} selected",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(10.dp))
             if (folders.isEmpty()) {
                 EmptyFolderState(themeColor = themeColor)
             } else {
@@ -169,82 +182,79 @@ fun LibraryFoldersSheet(
             Spacer(modifier = Modifier.height(10.dp))
 
             OutlinedButton(
-                onClick = onFixFavoritesMapping,
-                enabled = !isScanning && !isFixingFavoritesMapping && !isConvertingFavorites && folders.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                if (isFixingFavoritesMapping) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Rounded.Refresh,
-                        contentDescription = null
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(9.dp))
-                Text(
-                    if (isFixingFavoritesMapping)
-                        "Fixing favorites mapping…"
-                    else
-                        "Fix favorites mapping"
-                )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            OutlinedButton(
-                onClick = onConvertFavorites,
-                enabled = !isScanning && !isFixingFavoritesMapping && !isConvertingFavorites,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                if (isConvertingFavorites) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Rounded.Refresh, contentDescription = null)
-                }
-                Spacer(modifier = Modifier.width(9.dp))
-                Text(if (isConvertingFavorites) "Converting favorites…" else "Convert to new format")
-            }
-            if (isConvertingFavorites && conversionProgress != null) {
-                Spacer(modifier = Modifier.height(8.dp))
-                LinearProgressIndicator(
-                    progress = { conversionProgress.fraction },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                val eta = conversionProgress.etaSeconds()
-                Text(
-                    "${conversionProgress.completed} / ${conversionProgress.total} done" +
-                        (eta?.let { " · ETA ${it / 60}m ${it % 60}s" } ?: " · Calculating ETA…"),
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            OutlinedButton(
                 onClick = onRescan,
                 enabled = !isScanning && folders.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                if (isScanning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp
+                Icon(Icons.Rounded.Refresh, contentDescription = null)
+                Spacer(modifier = Modifier.width(9.dp))
+                Text(if (isScanning) "Scanning…" else "Rescan photo library")
+            }
+            Text("Refresh the list of photos after adding, moving, or deleting files.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp, bottom = 14.dp))
+
+            HorizontalDivider()
+            TextButton(
+                onClick = { showAdvancedTools = !showAdvancedTools },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(if (showAdvancedTools) "Hide advanced repair tools  ▲" else "Advanced repair tools  ▼")
+            }
+            if (showAdvancedTools || isFixingFavoritesMapping || isConvertingFavorites) {
+                Text("Only use these tools if favorites are missing, linked to the wrong originals, or were created by an older version.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = onFixFavoritesMapping,
+                    enabled = !isScanning && !isFixingFavoritesMapping && !isConvertingFavorites && folders.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isFixingFavoritesMapping) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Rounded.Refresh, contentDescription = null)
+                    }
+                    Spacer(modifier = Modifier.width(9.dp))
+                    Text(if (isFixingFavoritesMapping) "Repairing favorite links…" else "Fix favorites mapping")
+                }
+                Text("Reconnect saved favorites to their original photos.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = onConvertFavorites,
+                    enabled = !isScanning && !isFixingFavoritesMapping && !isConvertingFavorites,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (isConvertingFavorites) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Rounded.Refresh, contentDescription = null)
+                    }
+                    Spacer(modifier = Modifier.width(9.dp))
+                    Text(if (isConvertingFavorites) "Converting favorites…" else "Convert legacy favorite names")
+                }
+                Text("One-time update for older favorite filenames. New favorites already use FAV_ names.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (isConvertingFavorites && conversionProgress != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { conversionProgress.fraction },
+                        modifier = Modifier.fillMaxWidth()
                     )
-                } else {
-                    Icon(
-                        imageVector = Icons.Rounded.Refresh,
-                        contentDescription = null
+                    val eta = conversionProgress.etaSeconds()
+                    Text(
+                        "${conversionProgress.completed} / ${conversionProgress.total} done" +
+                            (eta?.let { " · ETA ${it / 60}m ${it % 60}s" } ?: " · Calculating ETA…"),
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
-
-                Spacer(modifier = Modifier.width(9.dp))
-                Text(if (isScanning) "Scanning…" else "Rescan library")
             }
+
         }
     }
 }
@@ -255,7 +265,7 @@ private fun EmptyFolderState(
 ) {
     Surface(
         shape = RoundedCornerShape(22.dp),
-        color = Color.White.copy(alpha = 0.05f),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -292,7 +302,7 @@ private fun EmptyFolderState(
             Text(
                 text = "Add at least one folder before starting a roulette session.",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.Gray
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -307,7 +317,7 @@ private fun FolderCard(
 ) {
     Surface(
         shape = RoundedCornerShape(20.dp),
-        color = Color.White.copy(alpha = 0.055f),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -343,7 +353,7 @@ private fun FolderCard(
                     Text(
                         text = config.uri.toString(),
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1
                     )
                 }
@@ -376,7 +386,7 @@ private fun FolderCard(
                             "Only photos directly inside this folder are included."
                         },
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 

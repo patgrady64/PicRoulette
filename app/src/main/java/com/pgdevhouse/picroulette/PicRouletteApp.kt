@@ -120,6 +120,8 @@ import java.util.Locale
 @Composable
 fun PicRouletteApp(
     themeColor: Color,
+    selectedTheme: PicRouletteThemeMode,
+    onThemeChanged: (PicRouletteThemeMode) -> Unit,
     externalImageRequest: ExternalImageRequest? = null,
     onExternalImageRequestConsumed: () -> Unit = {}
 ) {
@@ -1461,6 +1463,8 @@ fun PicRouletteApp(
 
             if (showOptionsSheet) {
                 PicRouletteOptionsSheet(
+                    selectedTheme = selectedTheme,
+                    onThemeChanged = onThemeChanged,
                     hapticFeedbackEnabled = hapticFeedbackEnabled,
                     keepScreenAwakeEnabled = keepScreenAwakeEnabled,
                     showPhotoCounterByDefault =
@@ -1731,7 +1735,7 @@ fun PicRouletteApp(
                 AlertDialog(
                     onDismissRequest = { },
                     title = { Text("Backup/restore running in background") },
-                    text = { Text("${BackupRestoreCoordinator.operation.replaceFirstChar { it.uppercase() }} is still running. You can keep using PicRoulette or reopen progress.") },
+                    text = { Text("Your ${BackupRestoreCoordinator.operation} is still working. You can keep using PicRoulette, turn off the screen, or reopen the progress display. Check the Android notification for the current step.") },
                     confirmButton = { TextButton(onClick = { showTransferDialog = true; showBackupRestore = false }) { Text("Show progress") } },
                     dismissButton = { TextButton(onClick = { showBackupRestore = false }) { Text("Keep browsing") } }
                 )
@@ -2790,51 +2794,77 @@ fun PicRouletteApp(
                                                 )
                                         ) {
                                             Text(
-                                                "Photo Metadata",
-                                                style =
-                                                    MaterialTheme.typography
-                                                        .headlineSmall,
+                                                "Photo Information",
+                                                style = MaterialTheme.typography.headlineSmall,
                                                 color = themeColor
                                             )
-
-                                            Spacer(Modifier.height(16.dp))
-
-                                            MetadataRow(
-                                                "Filename",
-                                                currentFileDetails.displayName
-                                            )
-                                            MetadataRow("Size", sizeText)
-                                            MetadataRow(
-                                                "Resolution",
-                                                if (
-                                                    activePhotoMetadata?.width != null &&
-                                                    activePhotoMetadata?.height != null
-                                                ) {
-                                                    "${activePhotoMetadata?.width} x " +
-                                                        "${activePhotoMetadata?.height} px"
-                                                } else {
-                                                    "Unknown"
-                                                }
-                                            )
-                                            MetadataRow(
-                                                "URI Path",
-                                                currentUri.path ?: "N/A"
+                                            Text(
+                                                "File details and linked favorite",
+                                                color = Color.LightGray,
+                                                fontSize = 13.sp
                                             )
 
-                                            if (isFavoritesMode) {
+                                            Spacer(Modifier.height(18.dp))
+                                            Text(
+                                                "ORIGINAL PHOTO",
+                                                color = themeColor,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(Modifier.height(8.dp))
+                                            val infoOriginalMapping = if (isFavoritesMode) {
+                                                currentFavoriteMapping
+                                            } else {
+                                                findActiveFavoriteMapping(
+                                                    favoriteMappings, currentUri.toString()
+                                                ) { a, b -> sameImage(Uri.parse(a), Uri.parse(b)) }
+                                            }
+                                            val originalInfoName = infoOriginalMapping?.originalFileName
+                                                ?.takeIf { it.isNotBlank() }
+                                                ?: if (isFavoritesMode) "Original unavailable" else currentFileDetails.displayName
+                                            MetadataRow("File name", originalInfoName)
+                                            if (!isFavoritesMode) {
+                                                MetadataRow("Size", sizeText)
                                                 MetadataRow(
-                                                    "Original Photo",
-                                                    when {
-                                                        currentFavoriteMapping?.isDeleted == true ->
-                                                            "Deleted"
-                                                        currentFavoriteMapping != null ->
-                                                            currentFavoriteMapping.originalFileName
-                                                        else ->
-                                                            "Link unavailable"
-                                                    }
+                                                    "Resolution",
+                                                    if (activePhotoMetadata?.width != null &&
+                                                        activePhotoMetadata?.height != null
+                                                    ) {
+                                                        "${activePhotoMetadata?.width} x ${activePhotoMetadata?.height} px"
+                                                    } else "Unknown"
                                                 )
                                             }
+                                            MetadataRow("Location", if (isFavoritesMode) {
+                                                infoOriginalMapping?.originalRelativePath
+                                                    ?.takeIf { it.isNotBlank() } ?: "Unavailable"
+                                            } else currentUri.path ?: "Unavailable")
 
+                                            Spacer(Modifier.height(18.dp))
+                                            Text(
+                                                "SAVED FAVORITE",
+                                                color = themeColor,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(Modifier.height(8.dp))
+                                            when {
+                                                infoOriginalMapping?.isDeleted == true -> {
+                                                    MetadataRow("Status", "Original photo deleted")
+                                                    MetadataRow("Favorite", infoOriginalMapping.favoriteFileName.ifBlank { "Unavailable" })
+                                                }
+                                                infoOriginalMapping != null -> {
+                                                    MetadataRow("Status", "Linked")
+                                                    MetadataRow("File name", infoOriginalMapping.favoriteFileName.ifBlank {
+                                                        if (isFavoritesMode) currentFileDetails.displayName else "Unavailable"
+                                                    })
+                                                    if (isFavoritesMode) MetadataRow("Saved image size", sizeText)
+                                                }
+                                                isFavoritesMode -> {
+                                                    MetadataRow("Status", "Favorite mapping unavailable")
+                                                    MetadataRow("File name", currentFileDetails.displayName)
+                                                }
+                                                else -> MetadataRow("Status", "Not favorited")
+                                            }
                                             Spacer(Modifier.height(24.dp))
 
                                             Button(
@@ -2898,61 +2928,80 @@ fun PicRouletteApp(
                                             renameErrorMessage = null
                                         }
                                     },
-                                    title = { Text("Rename File") },
+                                    title = { Text("Rename Photo") },
                                     text = {
-                                        Column {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .verticalScroll(rememberScrollState())
+                                        ) {
                                             Text(
-                                                "Enter a new name. The image " +
-                                                    "type will stay the same."
+                                                "Rename the original photo. If it has a linked favorite, " +
+                                                    "PicRoulette will rename that copy too.",
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 14.sp
                                             )
-
-                                            Spacer(Modifier.height(10.dp))
-                                            Text("Original: $originalNameForDialog")
+                                            Spacer(Modifier.height(16.dp))
+                                            Text(
+                                                "CURRENT FILES",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(Modifier.height(8.dp))
+                                            MetadataRow("Original", originalNameForDialog)
                                             if (linkedMapping != null) {
-                                                Text("Favorite: ${linkedMapping.favoriteFileName.ifBlank { "Linked favorite" }}")
+                                                MetadataRow(
+                                                    "Favorite",
+                                                    linkedMapping.favoriteFileName.ifBlank { "Linked favorite" }
+                                                )
+                                            } else if (isFavoritesMode) {
+                                                Text(
+                                                    "Original link unavailable. Rename requires a valid favorite mapping.",
+                                                    color = MaterialTheme.colorScheme.error,
+                                                    fontSize = 13.sp
+                                                )
                                             }
-                                            Spacer(Modifier.height(14.dp))
 
+                                            Spacer(Modifier.height(18.dp))
                                             OutlinedTextField(
                                                 value = renameBaseName,
                                                 onValueChange = {
                                                     renameBaseName = it
                                                     renameErrorMessage = null
                                                 },
-                                                label = { Text("Filename") },
+                                                label = { Text("New original filename") },
                                                 singleLine = true,
                                                 enabled = !isRenaming,
+                                                suffix = {
+                                                    if (currentNameParts.extension.isNotBlank()) {
+                                                        Text(".${currentNameParts.extension}")
+                                                    }
+                                                },
                                                 modifier = Modifier.fillMaxWidth()
                                             )
-
+                                            Spacer(Modifier.height(14.dp))
+                                            Text(
+                                                "PREVIEW",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(Modifier.height(8.dp))
+                                            MetadataRow("Original becomes", proposedOriginalName)
                                             if (linkedMapping != null) {
-                                                Spacer(Modifier.height(6.dp))
+                                                MetadataRow("Favorite becomes", proposedFavoriteName)
                                                 Text(
-                                                    "Favorite will become: $proposedFavoriteName",
-                                                    color = Color.Gray,
-                                                    fontSize = 13.sp
+                                                    "The linked favorite image and its crop will be preserved.",
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    fontSize = 12.sp
                                                 )
                                             }
-                                            if (
-                                                currentNameParts.extension
-                                                    .isNotEmpty()
-                                            ) {
-                                                Spacer(Modifier.height(6.dp))
-                                                Text(
-                                                    text =
-                                                        "File type: " +
-                                                            currentNameParts
-                                                                .extension,
-                                                    color = Color.Gray,
-                                                    fontSize = 13.sp
-                                                )
-                                            }
-
                                             renameErrorMessage?.let { message ->
                                                 Spacer(Modifier.height(10.dp))
                                                 Text(
                                                     text = message,
-                                                    color = Color.Red,
+                                                    color = MaterialTheme.colorScheme.error,
                                                     fontSize = 13.sp
                                                 )
                                             }
@@ -4059,7 +4108,7 @@ private fun FavoritesExportProgressDialog(
     val eta = when {
         total > 0 && completed >= 3 && completed < total && elapsed > 1500L ->
             formatTransferEta((elapsed.toDouble() / completed * (total - completed)).toLong())
-        total > 0 && completed >= total -> "Finishing this step…"
+        total > 0 && completed >= total -> "Step complete • preparing next step…"
         else -> "Estimating time remaining…"
     }
     val label = when (phase) {
@@ -4071,7 +4120,7 @@ private fun FavoritesExportProgressDialog(
     }
     AlertDialog(
         onDismissRequest = onBackground,
-        title = { Text("Creating PicRoulette backup", fontWeight = FontWeight.Bold) },
+        title = { Text("Backup in progress", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)) {
                 Text(label, fontWeight = FontWeight.SemiBold)
@@ -4080,11 +4129,12 @@ private fun FavoritesExportProgressDialog(
                         progress = { (completed.toFloat() / total).coerceIn(0f, 1f) },
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Text("$completed / $total items • ${(completed * 100 / total)}%", style = MaterialTheme.typography.bodySmall)
+                    Text("Step progress: $completed / $total items • ${(completed * 100 / total)}%", style = MaterialTheme.typography.bodySmall)
                 } else {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
-                Text(eta, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                Text(eta, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                Text("This percentage is for the current step. The backup is complete only after the final confirmation.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (!progress?.currentFileName.isNullOrBlank()) {
                     Text(progress!!.currentFileName, maxLines = 2, style = MaterialTheme.typography.bodySmall)
                 }
@@ -4183,7 +4233,7 @@ private fun FavoritesImportProgressDialog(
             if (total > 0) "Checking album links • $completed of $total" else "Checking album links"
         }
         FavoritesZipImportPhase.FINISHING -> {
-            "Saving restored data and refreshing favorites"
+            "Final checks: saving photo links and refreshing your library"
         }
     }
 
@@ -4253,7 +4303,7 @@ private fun FavoritesImportProgressDialog(
                     )
 
                     Text(
-                        text = "${(fraction * 100f).toInt()}%",
+                        text = "Current step: ${(fraction * 100f).toInt()}%",
                         color = Color.Gray,
                         style =
                             MaterialTheme.typography.bodySmall
@@ -4261,8 +4311,10 @@ private fun FavoritesImportProgressDialog(
                 }
 
                 Spacer(modifier = Modifier.height(6.dp))
+                Text("The restore is not finished until all links, albums, and final checks are saved.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = if (total > 0) "$completed / $total items • $etaText" else "Still working • $etaText",
+                    text = if (total > 0) "$completed / $total items in this step • $etaText" else "Still working • $etaText",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray
                 )

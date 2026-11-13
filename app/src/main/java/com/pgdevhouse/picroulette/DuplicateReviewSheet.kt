@@ -351,7 +351,7 @@ fun DuplicateReviewSheet(
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 when (page) {
                     DuplicatePage.SETUP -> {
-                        Text("Choose what to scan", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text("1  •  Match type", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             FilterChip(selected = !visualMode, onClick = { if (!scanning) {
@@ -364,8 +364,8 @@ fun DuplicateReviewSheet(
                         Text(if (visualMode) "Visual similarity can include different photos. Always inspect before deleting."
                             else "Exact matches have identical file contents.", style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(14.dp))
-                        Text("Photo sources", fontWeight = FontWeight.SemiBold)
-                        Text("Albums are labels, not additional photo sources. All memberships are displayed in results.",
+                        Text("2  •  Where to look", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text("Choose the photos to compare. Album memberships are shown in results, without counting the same photo twice.",
                             style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(6.dp))
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -383,7 +383,7 @@ fun DuplicateReviewSheet(
                             }
                             DuplicateScanCoordinator.start(context, source, visualMode,
                                 libraryPhotos, folders, favoriteFiles.map { it.mediaUri })
-                        }) { Text(if (scanning) "Scanning photos..." else "Start duplicate scan") }
+                        }) { Text(if (scanning) "Scanning photos…" else "Scan for duplicates") }
                         if (scanning) {
                             OutlinedButton(onClick = { stopConfirm = true }, modifier = Modifier.fillMaxWidth()) {
                                 Text("Stop scan")
@@ -429,12 +429,12 @@ fun DuplicateReviewSheet(
                             Text("${result.sets.size} groups • ${result.sets.sumOf { it.images.size }} matching photos" +
                                 if (result.unreadable > 0) " • ${result.unreadable} skipped" else "",
                                 style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text("Groups can contain 2, 3, or more copies. Choose any photos to delete, including every copy in a group. Deleting all requires extra confirmation.",
+                            Text("Review each group before selecting files. Nothing is deleted during scanning, and deleting every copy requires extra confirmation.",
                                 style = MaterialTheme.typography.bodySmall)
                             Spacer(Modifier.height(10.dp))
                             if (message.isNotBlank()) Text(message, style = MaterialTheme.typography.bodySmall)
                             if (result.sets.isEmpty()) {
-                                Text("No matching photos found with these scan settings.")
+                                Text("No duplicates found. Your photos have not been changed.")
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedButton(onClick = { page = DuplicatePage.SETUP }) { Text("Change scan settings") }
                             }

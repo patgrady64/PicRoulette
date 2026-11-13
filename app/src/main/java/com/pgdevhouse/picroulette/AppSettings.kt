@@ -13,7 +13,23 @@ private const val PHOTO_COUNTER_DEFAULT_KEY = "photo_counter_default_enabled"
 private const val SCAN_LIBRARY_ON_START_KEY = "scan_library_on_start_enabled"
 private const val DEFAULT_PHOTO_DISPLAY_KEY = "default_photo_display_mode"
 private const val TUTORIAL_SEEN_KEY = "tutorial_seen_v1"
+private const val APP_THEME_KEY = "app_theme_mode"
 private const val PHOTO_LIBRARY_CACHE_FILE = "photo_library_cache.txt"
+
+enum class PicRouletteThemeMode {
+    DARK, LIGHT, SYSTEM
+}
+
+fun getPicRouletteThemeMode(context: Context): PicRouletteThemeMode = runCatching {
+    PicRouletteThemeMode.valueOf(
+        preferences(context).getString(APP_THEME_KEY, PicRouletteThemeMode.DARK.name)
+            ?: PicRouletteThemeMode.DARK.name
+    )
+}.getOrDefault(PicRouletteThemeMode.DARK)
+
+fun setPicRouletteThemeMode(context: Context, mode: PicRouletteThemeMode) {
+    preferences(context).edit().putString(APP_THEME_KEY, mode.name).apply()
+}
 
 enum class PhotoDisplayMode {
     FIT,

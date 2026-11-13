@@ -15,6 +15,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Info
@@ -27,9 +29,16 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -39,6 +48,8 @@ import androidx.compose.ui.unit.dp
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PicRouletteOptionsSheet(
+    selectedTheme: PicRouletteThemeMode,
+    onThemeChanged: (PicRouletteThemeMode) -> Unit,
     hapticFeedbackEnabled: Boolean,
     keepScreenAwakeEnabled: Boolean,
     showPhotoCounterByDefault: Boolean,
@@ -62,6 +73,7 @@ fun PicRouletteOptionsSheet(
     onUpgradeToPro: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    var advancedExpanded by remember { mutableStateOf(false) }
     ModalBottomSheet(
         onDismissRequest = onDismiss
     ) {
@@ -86,10 +98,60 @@ fun PicRouletteOptionsSheet(
             Text(
                 text = "Customize PicRoulette and manage your app data.",
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color.Gray
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            OptionSectionTitle("Experience")
+            OptionSectionTitle("Appearance")
+            Text("Choose how PicRoulette looks on your phone.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = "Theme",
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.titleMedium
+            )
+            Spacer(Modifier.height(5.dp))
+            Text(
+                text = "Dark is the default. Choose light or match your phone's appearance.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            val modes = listOf(PicRouletteThemeMode.DARK, PicRouletteThemeMode.LIGHT, PicRouletteThemeMode.SYSTEM)
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                modes.forEachIndexed { index, mode ->
+                    SegmentedButton(
+                        selected = selectedTheme == mode,
+                        onClick = { onThemeChanged(mode) },
+                        shape = SegmentedButtonDefaults.itemShape(index, modes.size),
+                        label = { Text(when (mode) {
+                            PicRouletteThemeMode.DARK -> "Dark"
+                            PicRouletteThemeMode.LIGHT -> "Light"
+                            PicRouletteThemeMode.SYSTEM -> "System"
+                        }) }
+                    )
+                }
+            }
+
+            OptionSectionTitle("Photo viewing")
+            Text("Choose how photos look and how the viewer responds.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
+            OptionSwitchRow(
+                title = "Show photo counter by default",
+                description = "Start each viewer session with the current photo number visible",
+                checked = showPhotoCounterByDefault,
+                themeColor = themeColor,
+                onCheckedChange = onPhotoCounterDefaultChanged
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            PhotoDisplayModeCard(
+                selectedMode = defaultPhotoDisplayMode,
+                themeColor = themeColor,
+                onModeSelected = onDefaultPhotoDisplayModeChanged
+            )
+
+            Spacer(Modifier.height(10.dp))
 
             OptionSwitchRow(
                 title = "Haptic feedback",
@@ -109,133 +171,15 @@ fun PicRouletteOptionsSheet(
                 onCheckedChange = onKeepScreenAwakeChanged
             )
 
-            OptionSectionTitle("Viewer")
-
-            OptionSwitchRow(
-                title = "Show photo counter by default",
-                description = "Start each viewer session with the current photo number visible",
-                checked = showPhotoCounterByDefault,
-                themeColor = themeColor,
-                onCheckedChange = onPhotoCounterDefaultChanged
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            PhotoDisplayModeCard(
-                selectedMode = defaultPhotoDisplayMode,
-                themeColor = themeColor,
-                onModeSelected = onDefaultPhotoDisplayModeChanged
-            )
-
-            OptionSectionTitle("Library")
-
-            OptionSwitchRow(
-                title = "Scan library on app start",
-                description = if (scanLibraryOnStart) {
-                    "Refresh selected folders whenever PicRoulette opens"
-                } else {
-                    "Open quickly using the last completed scan"
-                },
-                checked = scanLibraryOnStart,
-                themeColor = themeColor,
-                onCheckedChange = onScanLibraryOnStartChanged
-            )
-
-            OptionSectionTitle("Help")
-
-            Surface(
-                onClick = onShowTutorial,
-                shape = RoundedCornerShape(22.dp),
-                color = Color.White.copy(alpha = 0.055f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OptionIcon(iconColor = themeColor) {
-                        Icon(Icons.Rounded.Info, null, tint = themeColor, modifier = Modifier.size(25.dp))
-                    }
-                    Spacer(Modifier.width(14.dp))
-                    Column {
-                        Text("Show tutorial", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                        Text("Replay the quick PicRoulette walkthrough", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                    }
-                }
-            }
-
-            OptionSectionTitle("Data")
-
-            Surface(
-                onClick = {
-                    if (isPro && !isMovingFavorites) {
-                        onChangeFavoriteFolder()
-                    } else if (!isPro) {
-                        onUpgradeToPro()
-                    }
-                },
-                shape = RoundedCornerShape(22.dp),
-                color = Color.White.copy(alpha = 0.055f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(17.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OptionIcon(iconColor = themeColor) {
-                        Icon(
-                            imageVector = Icons.Rounded.FolderOpen,
-                            contentDescription = null,
-                            tint = themeColor,
-                            modifier = Modifier.size(25.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(14.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = if (isMovingFavorites) {
-                                    "Moving favorites…"
-                                } else {
-                                    "Favorites folder"
-                                },
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            ProBadge()
-                        }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = favoriteFolderLocation,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
-                        )
-                    }
-                }
-            }
-
-            if (!favoriteFolderLocation.endsWith("(default)")) {
-                Spacer(modifier = Modifier.height(6.dp))
-                TextButton(
-                    onClick = {
-                        if (isPro && !isMovingFavorites) {
-                            onUseDefaultFavoriteFolder()
-                        } else if (!isPro) {
-                            onUpgradeToPro()
-                        }
-                    },
-                    enabled = !isMovingFavorites
-                ) {
-                    Text("Move back to Pictures/PR_FAVS")
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
+            OptionSectionTitle("Backup & restore")
+            Text("Protect your favorite crops, albums and photo mappings when changing phones.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(12.dp))
             Surface(
                 onClick = {
                     if (isPro) onOpenBackupRestore() else onUpgradeToPro()
                 },
                 shape = RoundedCornerShape(22.dp),
-                color = Color.White.copy(alpha = 0.055f),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -275,18 +219,134 @@ fun PicRouletteOptionsSheet(
                                 "Protect $favoriteCount favorites and their original-photo links"
                             },
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
             }
 
-            OptionSectionTitle("PicRoulette Pro")
+            Spacer(Modifier.height(18.dp))
+            Surface(
+                onClick = { advancedExpanded = !advancedExpanded },
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Library & storage", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Text("Scanning and favorites folder location", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Icon(if (advancedExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = if (advancedExpanded) "Collapse library settings" else "Expand library settings")
+                }
+            }
+            if (advancedExpanded) {
+                Spacer(Modifier.height(12.dp))
+                OptionSwitchRow(
+                title = "Scan library on app start",
+                description = if (scanLibraryOnStart) {
+                    "Refresh selected folders whenever PicRoulette opens"
+                } else {
+                    "Open quickly using the last completed scan"
+                },
+                checked = scanLibraryOnStart,
+                themeColor = themeColor,
+                onCheckedChange = onScanLibraryOnStartChanged
+            )
 
+            Surface(
+                onClick = {
+                    if (isPro && !isMovingFavorites) {
+                        onChangeFavoriteFolder()
+                    } else if (!isPro) {
+                        onUpgradeToPro()
+                    }
+                },
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(17.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OptionIcon(iconColor = themeColor) {
+                        Icon(
+                            imageVector = Icons.Rounded.FolderOpen,
+                            contentDescription = null,
+                            tint = themeColor,
+                            modifier = Modifier.size(25.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = if (isMovingFavorites) {
+                                    "Moving favorites…"
+                                } else {
+                                    "Favorites folder"
+                                },
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            ProBadge()
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = favoriteFolderLocation,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            if (!favoriteFolderLocation.endsWith("(default)")) {
+                Spacer(modifier = Modifier.height(6.dp))
+                TextButton(
+                    onClick = {
+                        if (isPro && !isMovingFavorites) {
+                            onUseDefaultFavoriteFolder()
+                        } else if (!isPro) {
+                            onUpgradeToPro()
+                        }
+                    },
+                    enabled = !isMovingFavorites
+                ) {
+                    Text("Move back to Pictures/PR_FAVS")
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            }
+            OptionSectionTitle("Help & account")
+            Surface(
+                onClick = onShowTutorial,
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OptionIcon(iconColor = themeColor) {
+                        Icon(Icons.Rounded.Info, null, tint = themeColor, modifier = Modifier.size(25.dp))
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column {
+                        Text("Show tutorial", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Text("Replay the quick PicRoulette walkthrough", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
             Surface(
                 onClick = onUpgradeToPro,
                 shape = RoundedCornerShape(22.dp),
-                color = Color.White.copy(alpha = 0.055f),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -320,7 +380,7 @@ fun PicRouletteOptionsSheet(
                                 "Unlock Albums, Album Roulette, and future Pro features"
                             },
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -330,7 +390,7 @@ fun PicRouletteOptionsSheet(
 
             Surface(
                 shape = RoundedCornerShape(18.dp),
-                color = Color.White.copy(alpha = 0.045f),
+                color = MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -349,7 +409,7 @@ fun PicRouletteOptionsSheet(
                     Text(
                         text = "PicRoulette scans your selected folders locally. Your photos are never uploaded.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = Color.Gray
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -365,7 +425,7 @@ private fun ProBadge() {
     ) {
         Text(
             text = "PRO",
-            color = Color(0xFFD6C7FF),
+            color = MaterialTheme.colorScheme.onSurface,
             fontWeight = FontWeight.Black,
             style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -381,7 +441,7 @@ private fun OptionSectionTitle(title: String) {
         text = title,
         style = MaterialTheme.typography.titleSmall,
         fontWeight = FontWeight.Bold,
-        color = Color.White
+        color = MaterialTheme.colorScheme.onSurface
     )
 
     Spacer(modifier = Modifier.height(10.dp))
@@ -397,7 +457,7 @@ private fun OptionSwitchRow(
 ) {
     Surface(
         shape = RoundedCornerShape(22.dp),
-        color = Color.White.copy(alpha = 0.055f),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -427,7 +487,7 @@ private fun OptionSwitchRow(
                 Text(
                     text = description,
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.Gray
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
@@ -449,7 +509,7 @@ private fun PhotoDisplayModeCard(
 ) {
     Surface(
         shape = RoundedCornerShape(22.dp),
-        color = Color.White.copy(alpha = 0.055f),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(17.dp)) {
@@ -464,7 +524,7 @@ private fun PhotoDisplayModeCard(
             Text(
                 text = "Fit shows the whole photo. Fill uses the entire screen and may crop the edges.",
                 style = MaterialTheme.typography.bodySmall,
-                color = Color.Gray
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Spacer(modifier = Modifier.height(14.dp))
@@ -512,7 +572,7 @@ private fun DisplayModeChoice(
         color = if (selected) {
             themeColor.copy(alpha = 0.22f)
         } else {
-            Color.Black.copy(alpha = 0.20f)
+            MaterialTheme.colorScheme.surfaceVariant
         },
         border = if (selected) {
             androidx.compose.foundation.BorderStroke(
@@ -530,7 +590,7 @@ private fun DisplayModeChoice(
             Text(
                 text = title,
                 fontWeight = FontWeight.Bold,
-                color = if (selected) themeColor else Color.White
+                color = if (selected) themeColor else MaterialTheme.colorScheme.onSurface
             )
         }
     }
