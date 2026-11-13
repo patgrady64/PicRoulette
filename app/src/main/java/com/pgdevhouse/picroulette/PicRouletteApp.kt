@@ -103,17 +103,13 @@ import coil.compose.AsyncImage
 import com.pgdevhouse.picroulette.utils.FavoritesZipExportPhase
 import com.pgdevhouse.picroulette.utils.FavoritesZipExportProgress
 import com.pgdevhouse.picroulette.utils.PortableVerifyProgress
-import com.pgdevhouse.picroulette.utils.exportFavoritesZip
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.collections.component1
-import kotlin.collections.component2
 import kotlin.collections.plus
 import com.pgdevhouse.picroulette.utils.FavoritesZipImportPhase
 import com.pgdevhouse.picroulette.utils.FavoritesZipImportProgress
-import com.pgdevhouse.picroulette.utils.importFavoritesZip
 import com.pgdevhouse.picroulette.utils.verifyPortableRestore
 import com.pgdevhouse.picroulette.utils.PortableRestorePreview
 import java.text.SimpleDateFormat
@@ -171,6 +167,7 @@ fun PicRouletteApp(
     var historyGeneration by remember { mutableIntStateOf(0) }
     var showProUpgrade by remember { mutableStateOf(false) }
     var isAlbumMode by remember { mutableStateOf(false) }
+    var showTransferDialog by remember { mutableStateOf(false) }
     var isExportingFavorites by remember {
         mutableStateOf(false)
     }
@@ -331,12 +328,10 @@ fun PicRouletteApp(
     DisposableEffect(
         isPlaying,
         keepScreenAwakeEnabled,
-        isImportingFavorites,
         isMovingFavorites
     ) {
         currentView.keepScreenOn =
-            isImportingFavorites ||
-                isMovingFavorites ||
+            isMovingFavorites ||
                 (isPlaying && keepScreenAwakeEnabled)
 
         onDispose {
@@ -713,184 +708,52 @@ fun PicRouletteApp(
         }
     }
 
-    val startPortableImport: (Uri, Uri, List<Uri>) -> Unit = { sourceZipUri, selectedRoot, sourceImagesForRestore ->
-            val existingFavoritesSnapshot =
-                favoriteFiles.toList()
-
-            val existingMappingsSnapshot =
-                favoriteMappings.toList()
-
-            val sourceImagesSnapshot = sourceImagesForRestore
-
-            favoritesImportProgress =
-                FavoritesZipImportProgress(
-                    phase =
-                        FavoritesZipImportPhase.READING_BACKUP
-                )
-
-            isImportingFavorites = true
-            var lastRestoreProgressTime = 0L
-            var lastRestoreProgressPhase: FavoritesZipImportPhase? = null
-
-            scope.launch {
-                val result = runCatching {
-                    withContext(Dispatchers.IO) {
-                        importFavoritesZip(
-                            context = context,
-                            sourceZipUri = sourceZipUri,
-                            existingFavorites =
-                                existingFavoritesSnapshot,
-                            existingMappings =
-                                existingMappingsSnapshot,
-                            sourceImages =
-                                sourceImagesSnapshot,
-                            selectedRootUri = selectedRoot,
-                            onProgress = { progress ->
-                                val now = android.os.SystemClock.elapsedRealtime()
-                                val stageChanged = progress.phase != lastRestoreProgressPhase
-                                if (stageChanged || progress.completed == progress.total || now - lastRestoreProgressTime >= 150L) {
-                                    lastRestoreProgressPhase = progress.phase
-                                    lastRestoreProgressTime = now
-                                    scope.launch { if (isImportingFavorites) favoritesImportProgress = progress }
-                                }
-                            }
-                        )
-                    }
-                }
-
-                result.onSuccess { importResult ->
-
-                    favoritesImportProgress =
-                        FavoritesZipImportProgress(
-                            phase =
-                                FavoritesZipImportPhase.FINISHING,
-                            completed = 0,
-                            total = 0,
-                            importedCount =
-                                importResult.importedCount,
-                            skippedDuplicateCount =
-                                importResult
-                                    .skippedDuplicateCount,
-                            failedCount =
-                                importResult.failedCount
-                        )
-
-                    favoriteMappings =
-                        importResult.updatedMappings
-
-                    albums = withContext(Dispatchers.IO) {
-                        loadAlbums(context)
-                    }
-
-                    withContext(Dispatchers.IO) {
-                        saveFavoriteMappings(context, importResult.updatedMappings)
-                    }
-
-                    pendingFavoriteLinkReviews =
-                        importResult.reviews
-
+    val transferFinishSerial = BackupRestoreCoordinator.finishSerial
+    LaunchedEffect(transferFinishSerial) {
+        if (transferFinishSerial > 0 && !BackupRestoreCoordinator.running) {
+            isExportingFavorites = false
+            isImportingFavorites = false
+            showTransferDialog = false
+            favoriteMappings = getFavoriteMappings(context)
+            albums = withContext(Dispatchers.IO) { loadAlbums(context) }
+            refreshFavs(context) { favoriteFiles = it }
+            val msg = BackupRestoreCoordinator.resultMessage
+            if (msg.isNotBlank()) Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            if (!BackupRestoreCoordinator.failed) {
+                val restored = BackupRestoreCoordinator.importResult
+                if (restored != null) {
+                    pendingFavoriteLinkReviews = restored.reviews
                     currentFavoriteLinkReviewIndex = 0
-
-                    val sizeMb =
-                        importResult.importedBytes /
-                                1024.0 /
-                                1024.0
-
-                    val message = buildString {
-                        append(
-                            "${importResult.importedCount} favorites imported"
-                        )
-
-                        append(
-                            " • %.1f MB".format(sizeMb)
-                        )
-
-                        if (importResult.skippedDuplicateCount > 0) {
-                            append(
-                                " • ${importResult.skippedDuplicateCount} already present"
-                            )
-                        }
-
-                        if (importResult.restoredLinkCount > 0) {
-                            append(
-                                " • ${importResult.restoredLinkCount} links restored"
-                            )
-                        }
-
-                        if (importResult.existingLinkCount > 0) {
-                            append(
-                                " • ${importResult.existingLinkCount} links already present"
-                            )
-                        }
-
-                        if (importResult.reviews.isNotEmpty()) {
-                            append(
-                                " • ${importResult.reviews.size} need review"
-                            )
-                        }
-
-                        if (importResult.unresolvedLinkCount > 0) {
-                            append(
-                                " • ${importResult.unresolvedLinkCount} originals not found"
-                            )
-                        }
-
-                        if (importResult.failedCount > 0) {
-                            append(
-                                " • ${importResult.failedCount} failed"
-                            )
-                        }
-
-                        if (importResult.restoredAlbumCount > 0) {
-                            append(" • ${importResult.restoredAlbumCount} albums restored")
-                        }
-
-                        if (importResult.unresolvedAlbumPhotoCount > 0) {
-                            append(" • ${importResult.unresolvedAlbumPhotoCount} album photos not found")
-                        }
-
-                        if (
-                            !importResult.containsSourceLinks ||
-                            importResult.missingSourceMetadataCount > 0
-                        ) {
-                            append(
-                                " • Repair can check older links"
-                            )
-                        }
-                    }
-
-                    /*
-                     * Keep the progress dialog visible until the physical
-                     * favorites list has been refreshed on the main thread.
-                     */
-                    refreshFavs(context) { updatedFavorites ->
-                        favoriteFiles = updatedFavorites
-                        showBackupRestore = false
-                        isImportingFavorites = false
-                        favoritesImportProgress = null
-
-                        android.widget.Toast.makeText(
-                            context,
-                            message,
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-
-                result.onFailure { exception ->
-                    exception.printStackTrace()
-
-                    isImportingFavorites = false
-                    favoritesImportProgress = null
-
-                    android.widget.Toast.makeText(
-                        context,
-                        exception.message
-                            ?: "Favorites import failed",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
                 }
             }
+        }
+    }
+
+    val startPortableImport: (Uri, Uri, List<Uri>) -> Unit = { zip, root, images ->
+        // Background service owns the restore, even if this screen disappears.
+        if (!BackupRestoreCoordinator.running) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    zip, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            val started = BackupRestoreCoordinator.start(
+                context,
+                BackupRestoreCoordinator.Request.Import(
+                    source = zip,
+                    root = root,
+                    images = images.toList(),
+                    favorites = favoriteFiles.toList(),
+                    mappings = favoriteMappings.toList()
+                )
+            )
+            if (started) {
+                showTransferDialog = true
+                isImportingFavorites = true
+            } else {
+                Toast.makeText(context, BackupRestoreCoordinator.resultMessage, Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     val importFavoritesZipLauncher =
@@ -1069,77 +932,22 @@ fun PicRouletteApp(
                 return@rememberLauncherForActivityResult
             }
 
-            val favoritesSnapshot = favoriteFiles.toList()
-            val mappingsSnapshot = favoriteMappings.toList()
-            val albumsSnapshot = albums.toList()
-
-            favoritesExportProgress = FavoritesZipExportProgress(FavoritesZipExportPhase.PREPARING)
-            isExportingFavorites = true
-            var lastExportProgressTime = 0L
-            var lastExportProgressPhase: FavoritesZipExportPhase? = null
-
-            scope.launch {
-                val result = runCatching {
-                    withContext(Dispatchers.IO) {
-                        exportFavoritesZip(
-                            context = context,
-                            destinationUri = destinationUri,
-                            favorites = favoritesSnapshot,
-                            mappings = mappingsSnapshot,
-                            albums = albumsSnapshot,
-                            libraryRoots = folderConfigs.map { it.uri },
-                            libraryImages = pickedFolderImages.value.toList(),
-                            onProgress = { progress ->
-                                val now = android.os.SystemClock.elapsedRealtime()
-                                val stageChanged = progress.phase != lastExportProgressPhase
-                                if (stageChanged || progress.completed == progress.total || now - lastExportProgressTime >= 150L) {
-                                    lastExportProgressPhase = progress.phase
-                                    lastExportProgressTime = now
-                                    scope.launch { if (isExportingFavorites) favoritesExportProgress = progress }
-                                }
-                            }
-                        )
-                    }
-                }
-
-                isExportingFavorites = false
-                favoritesExportProgress = null
-
-                result.onSuccess { exportResult ->
-                    val sizeMb =
-                        exportResult.sourceBytesCopied /
-                                1024.0 /
-                                1024.0
-
-                    val message = buildString {
-                        append(
-                            "${exportResult.exportedCount} favorites backed up"
-                        )
-                        append(" • %.1f MB".format(sizeMb))
-
-                        if (exportResult.failedCount > 0) {
-                            append(
-                                " • ${exportResult.failedCount} failed"
-                            )
-                        }
-                    }
-
-                    android.widget.Toast.makeText(
-                        context,
-                        message,
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                }
-
-                result.onFailure { exception ->
-                    exception.printStackTrace()
-
-                    android.widget.Toast.makeText(
-                        context,
-                        "Favorites backup failed",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                }
+            val started = BackupRestoreCoordinator.start(
+                context,
+                BackupRestoreCoordinator.Request.Export(
+                    destination = destinationUri,
+                    favorites = favoriteFiles.toList(),
+                    mappings = favoriteMappings.toList(),
+                    albums = albums.toList(),
+                    roots = folderConfigs.map { it.uri },
+                    images = pickedFolderImages.value.toList()
+                )
+            )
+            if (started) {
+                showTransferDialog = true
+                isExportingFavorites = true
+            } else {
+                Toast.makeText(context, BackupRestoreCoordinator.resultMessage, Toast.LENGTH_LONG).show()
             }
         }
 
@@ -1919,7 +1727,16 @@ fun PicRouletteApp(
                 )
             }
 
-            if (showBackupRestore) {
+            if (showBackupRestore && BackupRestoreCoordinator.running && !showTransferDialog) {
+                AlertDialog(
+                    onDismissRequest = { },
+                    title = { Text("Backup/restore running in background") },
+                    text = { Text("${BackupRestoreCoordinator.operation.replaceFirstChar { it.uppercase() }} is still running. You can keep using PicRoulette or reopen progress.") },
+                    confirmButton = { TextButton(onClick = { showTransferDialog = true; showBackupRestore = false }) { Text("Show progress") } },
+                    dismissButton = { TextButton(onClick = { showBackupRestore = false }) { Text("Keep browsing") } }
+                )
+            }
+            if (showBackupRestore && !BackupRestoreCoordinator.running) {
                 BackupRestoreSheet(
                     favoriteCount = favoriteFiles.size,
                     albumCount = albums.size,
@@ -1941,6 +1758,7 @@ fun PicRouletteApp(
                     onExport = {
                         if (
                             (favoriteFiles.isNotEmpty() || albums.isNotEmpty()) &&
+                            !BackupRestoreCoordinator.running &&
                             !isExportingFavorites &&
                             !isImportingFavorites &&
                             !isMigratingFavoriteLinks
@@ -1958,6 +1776,7 @@ fun PicRouletteApp(
                     },
                     onImport = {
                         if (
+                            !BackupRestoreCoordinator.running &&
                             !isImportingFavorites &&
                             !isExportingFavorites &&
                             !isMigratingFavoriteLinks
@@ -4139,15 +3958,22 @@ fun PicRouletteApp(
         )
     }
 
-    if (isExportingFavorites) {
-        FavoritesExportProgressDialog(progress = favoritesExportProgress, themeColor = themeColor)
+    if (showTransferDialog && BackupRestoreCoordinator.running) {
+        if (BackupRestoreCoordinator.operation == "backup") {
+            FavoritesExportProgressDialog(
+                progress = BackupRestoreCoordinator.exportProgress,
+                themeColor = themeColor,
+                onBackground = { showTransferDialog = false }
+            )
+        } else {
+            FavoritesImportProgressDialog(
+                progress = BackupRestoreCoordinator.importProgress,
+                themeColor = themeColor,
+                onBackground = { showTransferDialog = false }
+            )
+        }
     }
-    if (isImportingFavorites) {
-        FavoritesImportProgressDialog(
-            progress = favoritesImportProgress,
-            themeColor = themeColor
-        )
-    }
+
 }
 
 private fun formatFavoriteMoveEta(remainingMillis: Long): String {
@@ -4222,7 +4048,8 @@ private fun formatTransferEta(milliseconds: Long): String {
 @Composable
 private fun FavoritesExportProgressDialog(
     progress: FavoritesZipExportProgress?,
-    themeColor: Color
+    themeColor: Color,
+    onBackground: () -> Unit
 ) {
     val phase = progress?.phase ?: FavoritesZipExportPhase.PREPARING
     val completed = progress?.completed ?: 0
@@ -4243,7 +4070,7 @@ private fun FavoritesExportProgressDialog(
         FavoritesZipExportPhase.FINALIZING -> "Writing backup manifest and finishing ZIP"
     }
     AlertDialog(
-        onDismissRequest = { },
+        onDismissRequest = onBackground,
         title = { Text("Creating PicRoulette backup", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)) {
@@ -4263,10 +4090,10 @@ private fun FavoritesExportProgressDialog(
                 }
                 val written = (progress?.copiedBytes ?: 0L) + (progress?.activeFileBytes ?: 0L)
                 Text("${"%.1f".format(Locale.US, written / (1024.0 * 1024.0))} MB copied • ${progress?.failedCount ?: 0} failed", style = MaterialTheme.typography.bodySmall)
-                Text("Backup is running. Keep PicRoulette open until it finishes.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text("You can turn off the screen or use another app. Progress is in your notifications.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             }
         },
-        confirmButton = { },
+        confirmButton = { TextButton(onClick = onBackground) { Text("Run in background") } },
         containerColor = MaterialTheme.colorScheme.surface
     )
 }
@@ -4274,7 +4101,8 @@ private fun FavoritesExportProgressDialog(
 @Composable
 private fun FavoritesImportProgressDialog(
     progress: FavoritesZipImportProgress?,
-    themeColor: Color
+    themeColor: Color,
+    onBackground: () -> Unit
 ) {
     val phase = progress?.phase
         ?: FavoritesZipImportPhase.READING_BACKUP
@@ -4360,12 +4188,7 @@ private fun FavoritesImportProgressDialog(
     }
 
     AlertDialog(
-        onDismissRequest = {
-            /*
-             * Imports cannot be dismissed midway because files and mappings
-             * may still be actively written.
-             */
-        },
+        onDismissRequest = onBackground,
         title = {
             Text(
                 text = "Restoring Favorites",
@@ -4495,13 +4318,13 @@ private fun FavoritesImportProgressDialog(
 
                 Text(
                     text =
-                        "Keep PicRoulette open until the import finishes.",
+                        "Restore continues in the background. Check notifications for progress.",
                     color = Color.Gray,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
         },
-        confirmButton = {}
+        confirmButton = { TextButton(onClick = onBackground) { Text("Run in background") } }
     )
 }
 
